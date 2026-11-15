@@ -23,6 +23,8 @@ import javax.crypto.spec.SecretKeySpec
  * is not tamper-proof on a rooted/compromised device. Master password remains
  * the recovery path.
  */
+enum class PinUnlockResult { SUCCESS, WRONG_PIN, LOCKED_OUT }
+
 object PinVaultUnlock {
     private const val KEYSTORE = "AndroidKeyStore"
     private const val HMAC_ALIAS = "veylora_pin_hmac_v1"
@@ -36,8 +38,6 @@ object PinVaultUnlock {
     private const val TAG_BITS = 128
     private const val AAD = "VEYlora|pin-wrapped-vault-key|v1"
     private const val KDF_CONTEXT = "VEYlora|pin-kdf|v1|"
-
-    enum class UnlockResult { SUCCESS, WRONG_PIN, LOCKED_OUT }
 
     @Synchronized
     fun isEnabled(context: Context): Boolean {
@@ -87,7 +87,7 @@ object PinVaultUnlock {
     }
 
     @Synchronized
-    fun unlock(context: Context, pin: CharArray): UnlockResult {
+    fun unlock(context: Context, pin: CharArray): PinUnlockResult {
         val prefs = preferences(context)
         try {
             if (prefs.getBoolean(KEY_LOCKED_OUT, false) ||

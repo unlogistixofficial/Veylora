@@ -385,7 +385,7 @@ private fun VaultGateScreen(
                             val result = withContext(Dispatchers.Default) {
                                 try { PinVaultUnlock.unlock(context, enteredPin) }
                                 catch (_: Exception) { PinUnlockResult.WRONG_PIN }
-                                finally { enteredPin.fill('\\u0000') }
+                                finally { enteredPin.fill('\u0000') }
                             }
                             busy = false
                             when (result) {
@@ -683,6 +683,8 @@ private fun SettingsScreen(
     var pinInput by remember { mutableStateOf("") }
     var pinConfirmation by remember { mutableStateOf("") }
     var pinMessage by remember { mutableStateOf<String?>(null) }
+    var pinIsEnabled by remember { mutableStateOf(pinEnabled) }
+    var biometricIsEnabled by remember { mutableStateOf(biometricEnabled) }
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp)
     ) {
@@ -693,7 +695,7 @@ private fun SettingsScreen(
         SettingsItem("Security", "Master password protection enabled", "◈")
         Spacer(Modifier.height(8.dp))
         Text(
-            if (pinEnabled) "App PIN is enabled. Five incorrect attempts disable PIN unlock and require the master password."
+            if (pinIsEnabled) "App PIN is enabled. Five incorrect attempts disable PIN unlock and require the master password."
             else "Set a 6–12 digit app PIN for convenient local unlock.",
             color = VeyloraMuted, fontSize = 12.sp, lineHeight = 17.sp
         )
@@ -701,9 +703,9 @@ private fun SettingsScreen(
             Button(
                 onClick = { pinInput = ""; pinConfirmation = ""; pinMessage = null; showPinDialog = true },
                 colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold, contentColor = VeyloraBlack)
-            ) { Text(if (pinEnabled) "Change PIN" else "Enable PIN") }
-            if (pinEnabled) {
-                TextButton(onClick = { onDisablePin(); pinMessage = "App PIN disabled." }) {
+            ) { Text(if (pinIsEnabled) "Change PIN" else "Enable PIN") }
+            if (pinIsEnabled) {
+                TextButton(onClick = { onDisablePin(); pinIsEnabled = false; pinMessage = "App PIN disabled." }) {
                     Text("Disable", color = VeyloraGold)
                 }
             }
@@ -711,13 +713,13 @@ private fun SettingsScreen(
         if (pinMessage != null) Text(pinMessage!!, color = VeyloraMuted, fontSize = 11.sp)
         Spacer(Modifier.height(12.dp))
         Text(
-            if (biometricEnabled) "Biometric unlock is enabled on this device."
+            if (biometricIsEnabled) "Biometric unlock is enabled on this device."
             else "Enable strong biometric unlock for quicker access.",
             color = VeyloraMuted, fontSize = 12.sp, lineHeight = 17.sp
         )
         Spacer(Modifier.height(8.dp))
-        if (biometricEnabled) {
-            TextButton(onClick = onDisableBiometric) {
+        if (biometricIsEnabled) {
+            TextButton(onClick = { onDisableBiometric(); biometricIsEnabled = false }) {
                 Text("Disable biometric unlock", color = VeyloraGold)
             }
         } else {
@@ -725,6 +727,7 @@ private fun SettingsScreen(
             Button(
                 onClick = { onEnableBiometric { success, message ->
                     biometricMessage = if (success) "Biometric unlock enabled." else message
+                    if (success) biometricIsEnabled = true
                 } },
                 colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold, contentColor = VeyloraBlack)
             ) {
@@ -745,7 +748,7 @@ private fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showPinDialog = false; pinInput = ""; pinConfirmation = "" },
             containerColor = VeyloraSurface,
-            title = { Text(if (pinEnabled) "Change app PIN" else "Set app PIN", color = VeyloraText) },
+            title = { Text(if (pinIsEnabled) "Change app PIN" else "Set app PIN", color = VeyloraText) },
             text = {
                 Column {
                     Text("Choose 6–12 digits. This PIN unlocks only this device and is not your master password.",
@@ -783,6 +786,7 @@ private fun SettingsScreen(
                         else -> null
                     }
                     if (pinMessage == null) {
+                        pinIsEnabled = true
                         pinInput = ""; pinConfirmation = ""; showPinDialog = false
                     }
                 }) { Text("Save PIN", color = VeyloraGold) }
