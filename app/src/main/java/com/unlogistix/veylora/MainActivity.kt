@@ -4,6 +4,18 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.unlogistix.veylora.security.InvalidMasterPasswordException
+import com.unlogistix.veylora.security.VaultCrypto
+import com.unlogistix.veylora.security.VaultSession
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,6 +69,14 @@ private enum class VeyloraTab(val label: String, val symbol: String) {
 }
 
 class MainActivity : ComponentActivity() {
+    private var sessionVersion by mutableIntStateOf(0)
+
+    override fun onStop() {
+        VaultSession.lock()
+        sessionVersion++
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setFlags(
@@ -65,14 +85,27 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             VeyloraTheme {
-                VeyloraApp()
+                VeyloraApp(sessionVersion)
             }
         }
     }
 }
 
 @Composable
-private fun VeyloraApp() {
+private fun VeyloraApp(sessionVersion: Int) {
+    val context = LocalContext.current
+    val initialized = remember(sessionVersion) { VaultCrypto.isInitialized(context) }
+    var unlocked by remember(sessionVersion) { mutableStateOf(VaultSession.isUnlocked()) }
+
+    if (unlocked) {
+        VeyloraDashboard()
+    } else {
+        VaultGateScreen(initialized = initialized, onUnlocked = { unlocked = true })
+    }
+}
+
+@Composable
+private fun VeyloraDashboard() {
     var selectedTab by remember { mutableStateOf(VeyloraTab.HOME) }
     var showVaultNotice by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
@@ -136,11 +169,11 @@ private fun VeyloraApp() {
             onDismissRequest = { showVaultNotice = false },
             containerColor = VeyloraSurface,
             title = {
-                Text("Vault setup is next", color = VeyloraText, fontWeight = FontWeight.SemiBold)
+                Text("Account storage is next", color = VeyloraText, fontWeight = FontWeight.SemiBold)
             },
             text = {
                 Text(
-                    "The secure vault and encryption layer are not implemented yet. Please don't enter or save real passwords in this build.",
+                    "Master-password protection is active, but account storage is still under development. Do not enter real account passwords yet.",
                     color = VeyloraMuted
                 )
             },
@@ -150,6 +183,132 @@ private fun VeyloraApp() {
                 }
             }
         )
+    }
+}
+
+
+@Composable
+private fun VaultGateScreen(initialized: Boolean, onUnlocked: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var password by remember { mutableStateOf("") }
+    var confirmation by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .background(VeyloraBlack).padding(horizontal = 26.dp, vertical = 34.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier.size(62.dp).background(VeyloraSurface, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("V", color = VeyloraGold, fontSize = 34.sp, fontWeight = FontWeight.Light)
+        }
+        Spacer(Modifier.height(18.dp))
+        Text("VEY LORA".replace(" ", ""), color = VeyloraText, fontSize = 25.sp,
+            letterSpacing = 4.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Text("YOUR DIGITAL LIFE, SECURED.", color = VeyloraMuted,
+            fontSize = 10.sp, letterSpacing = 1.8.sp)
+        Spacer(Modifier.height(42.dp))
+        Text(
+            if (initialized) "Welcome back" else "Create your master password",
+            color = VeyloraText, fontSize = 23.sp, fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(9.dp))
+        Text(
+            if (initialized) "Unlock your private vault to continue."
+            else "This password protects the encryption key for your future vault data.",
+            color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp
+        )
+        Spacer(Modifier.height(24.dp))
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it; error = null },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Master password") },
+            placeholder = { Text("Enter master password") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            shape = RoundedCornerShape(14.dp)
+        )
+        if (!initialized) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = confirmation,
+                onValueChange = { confirmation = it; error = null },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Confirm master password") },
+                placeholder = { Text("Re-enter master password") },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                shape = RoundedCornerShape(14.dp)
+            )
+            Spacer(Modifier.height(10.dp))
+            Text("Use at least 10 characters. If you lose this password, your vault cannot currently be recovered.",
+                color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
+        }
+        if (error != null) {
+            Spacer(Modifier.height(12.dp))
+            Text(error!!, color = Color(0xFFFF8A80), fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(22.dp))
+        Button(
+            onClick = {
+                if (busy) return@Button
+                if (password.isBlank()) {
+                    error = "Enter your master password."
+                } else if (!initialized && password.length < 10) {
+                    error = "Choose a master password with at least 10 characters."
+                } else if (!initialized && password != confirmation) {
+                    error = "The passwords do not match."
+                } else {
+                    busy = true
+                    error = null
+                    val secret = password.toCharArray()
+                    password = ""
+                    confirmation = ""
+                    scope.launch {
+                        val result = withContext(Dispatchers.Default) {
+                            try {
+                                if (initialized) VaultCrypto.unlock(context, secret)
+                                else VaultCrypto.create(context, secret)
+                                null
+                            } catch (badPassword: InvalidMasterPasswordException) {
+                                "That master password is incorrect."
+                            } catch (failure: Exception) {
+                                "Vault setup could not be completed. Please try again."
+                            } finally {
+                                secret.fill('\u0000')
+                            }
+                        }
+                        busy = false
+                        if (result == null) onUnlocked() else error = result
+                    }
+                }
+            },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = VeyloraGold,
+                contentColor = VeyloraBlack
+            )
+        ) {
+            Text(
+                if (busy) "Please wait…" else if (initialized) "Unlock vault" else "Create secure vault",
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Spacer(Modifier.height(22.dp))
+        Text("Your master password is never saved by Veylora.",
+            color = VeyloraMuted, fontSize = 11.sp)
     }
 }
 
@@ -206,10 +365,10 @@ private fun HomeScreen(onAddClick: () -> Unit) {
                         letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
                 }
                 Spacer(Modifier.height(18.dp))
-                Text("Not initialized", color = VeyloraText, fontSize = 21.sp,
+                Text("Encrypted vault ready", color = VeyloraText, fontSize = 21.sp,
                     fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
-                Text("Your secure vault will be ready after master password and encryption setup.",
+                Text("Your master password protects a randomly generated vault key. Secure account storage is the next milestone.",
                     color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp)
                 Spacer(Modifier.height(18.dp))
                 Button(
@@ -343,12 +502,12 @@ private fun SettingsScreen() {
         Spacer(Modifier.height(8.dp))
         Text("Manage your Veylora experience.", color = VeyloraMuted, fontSize = 13.sp)
         Spacer(Modifier.height(24.dp))
-        SettingsItem("Security", "Master password, PIN and biometrics", "◈")
+        SettingsItem("Security", "Master password protection enabled", "◈")
         SettingsItem("Appearance", "Luxury dark theme", "◐")
         SettingsItem("Backup & restore", "Encrypted backup options", "↗")
         SettingsItem("About Veylora", "Version 1.0.0 · Your Digital Life, Secured.", "ⓘ")
         Spacer(Modifier.height(20.dp))
-        Text("Security features will be enabled in upcoming development steps.",
+        Text("PIN, biometrics, encrypted account storage and recovery are still being developed.",
             color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
     }
 }
