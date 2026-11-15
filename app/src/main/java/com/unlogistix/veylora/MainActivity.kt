@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.fragment.app.FragmentActivity
 import androidx.biometric.BiometricPrompt
+import androidx.biometric.BiometricManager
 import androidx.core.content.ContextCompat
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.text.KeyboardOptions
@@ -148,7 +149,7 @@ class MainActivity : FragmentActivity() {
         BiometricPrompt.PromptInfo.Builder()
             .setTitle(title)
             .setSubtitle("Authenticate with your device biometrics")
-            .setAllowedAuthenticators(BiometricPrompt.AUTHENTICATORS_BIOMETRIC_STRONG)
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
             .setNegativeButtonText("Cancel")
             .build()
 
