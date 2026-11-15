@@ -2,7 +2,9 @@ package com.unlogistix.veylora
 
 import android.os.Bundle
 import android.view.WindowManager
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
@@ -14,8 +16,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.unlogistix.veylora.security.InvalidMasterPasswordException
+import com.unlogistix.veylora.security.BiometricVaultUnlock
 import com.unlogistix.veylora.security.VaultCrypto
 import com.unlogistix.veylora.security.VaultSession
+import javax.crypto.Cipher
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -68,8 +72,85 @@ private enum class VeyloraTab(val label: String, val symbol: String) {
     SETTINGS("Settings", "⚙")
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private var sessionVersion by mutableIntStateOf(0)
+
+
+    fun enableBiometricUnlock(onResult: (Boolean, String?) -> Unit) {
+        try {
+            val cipher = BiometricVaultUnlock.prepareEnrollmentCipher()
+            val prompt = biometricPrompt(
+                onSuccess = { authenticated ->
+                    try {
+                        BiometricVaultUnlock.finishEnrollment(
+                            this,
+                            authenticated.cryptoObject?.cipher
+                                ?: throw IllegalStateException("Biometric cipher is unavailable.")
+                        )
+                        onResult(true, null)
+                    } catch (error: Exception) {
+                        BiometricVaultUnlock.disable(this)
+                        onResult(false, "Could not enable biometric unlock. Use your master password.")
+                    }
+                },
+                onError = { message -> BiometricVaultUnlock.disable(this); onResult(false, message) }
+            )
+            prompt.authenticate(biometricPromptInfo("Enable biometric unlock"), BiometricPrompt.CryptoObject(cipher))
+        } catch (error: Exception) {
+            onResult(false, "Biometric unlock is unavailable on this device.")
+        }
+    }
+
+    fun unlockWithBiometric(onResult: (Boolean, String?) -> Unit) {
+        try {
+            val (cipher, encryptedKey) = BiometricVaultUnlock.prepareUnlock(this)
+            val prompt = biometricPrompt(
+                onSuccess = { authenticated ->
+                    try {
+                        BiometricVaultUnlock.finishUnlock(
+                            authenticated.cryptoObject?.cipher
+                                ?: throw IllegalStateException("Biometric cipher is unavailable."),
+                            encryptedKey
+                        )
+                        onResult(true, null)
+                    } catch (error: Exception) {
+                        onResult(false, "Biometric unlock failed. Use your master password.")
+                    }
+                },
+                onError = { message -> encryptedKey.fill(0); onResult(false, message) }
+            )
+            prompt.authenticate(biometricPromptInfo("Unlock Veylora"), BiometricPrompt.CryptoObject(cipher))
+        } catch (error: Exception) {
+            onResult(false, "Biometric unlock is unavailable. Use your master password.")
+        }
+    }
+
+    private fun biometricPrompt(
+        onSuccess: (BiometricPrompt.AuthenticationResult) -> Unit,
+        onError: (String) -> Unit
+    ): BiometricPrompt {
+        return BiometricPrompt(
+            this,
+            ContextCompat.getMainExecutor(this),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    onSuccess(result)
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    onError(errString.toString())
+                }
+            }
+        )
+    }
+
+    private fun biometricPromptInfo(title: String): BiometricPrompt.PromptInfo =
+        BiometricPrompt.PromptInfo.Builder()
+            .setTitle(title)
+            .setSubtitle("Authenticate with your device biometrics")
+            .setAllowedAuthenticators(BiometricPrompt.AUTHENTICATORS_BIOMETRIC_STRONG)
+            .setNegativeButtonText("Cancel")
+            .build()
 
     override fun onStop() {
         VaultSession.lock()
@@ -94,18 +175,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun VeyloraApp(sessionVersion: Int) {
     val context = LocalContext.current
+    val activity = context as? MainActivity
     val initialized = remember(sessionVersion) { VaultCrypto.isInitialized(context) }
     var unlocked by remember(sessionVersion) { mutableStateOf(VaultSession.isUnlocked()) }
 
     if (unlocked) {
-        VeyloraDashboard()
+        VeyloraDashboard(activity)
     } else {
-        VaultGateScreen(initialized = initialized, onUnlocked = { unlocked = true })
+        VaultGateScreen(initialized = initialized, biometricAvailable = BiometricVaultUnlock.isEnabled(context), activity = activity, onUnlocked = { unlocked = true })
     }
 }
 
 @Composable
-private fun VeyloraDashboard() {
+private fun VeyloraDashboard(activity: MainActivity?) {
     var selectedTab by remember { mutableStateOf(VeyloraTab.HOME) }
     var showVaultNotice by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
@@ -158,7 +240,11 @@ private fun VeyloraDashboard() {
                         query = searchQuery,
                         onQueryChange = { searchQuery = it }
                     )
-                    VeyloraTab.SETTINGS -> SettingsScreen()
+                    VeyloraTab.SETTINGS -> SettingsScreen(
+                        biometricEnabled = activity?.let { BiometricVaultUnlock.isEnabled(it) } == true,
+                        onEnableBiometric = { callback -> activity?.enableBiometricUnlock(callback) },
+                        onDisableBiometric = { activity?.let { BiometricVaultUnlock.disable(it) } }
+                    )
                 }
             }
         }
@@ -188,7 +274,7 @@ private fun VeyloraDashboard() {
 
 
 @Composable
-private fun VaultGateScreen(initialized: Boolean, onUnlocked: () -> Unit) {
+private fun VaultGateScreen(initialized: Boolean, biometricAvailable: Boolean, activity: MainActivity?, onUnlocked: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var password by remember { mutableStateOf("") }
@@ -305,6 +391,18 @@ private fun VaultGateScreen(initialized: Boolean, onUnlocked: () -> Unit) {
                 if (busy) "Please wait…" else if (initialized) "Unlock vault" else "Create secure vault",
                 fontWeight = FontWeight.SemiBold
             )
+        }
+        if (initialized && biometricAvailable && activity != null) {
+            Spacer(Modifier.height(12.dp))
+            TextButton(
+                onClick = {
+                    activity.unlockWithBiometric { success, message ->
+                        if (success) onUnlocked() else error = message
+                    }
+                }
+            ) {
+                Text("Unlock with biometrics", color = VeyloraGold)
+            }
         }
         Spacer(Modifier.height(22.dp))
         Text("Your master password is never saved by Veylora.",
@@ -494,7 +592,11 @@ private fun SearchScreen(query: String, onQueryChange: (String) -> Unit) {
 }
 
 @Composable
-private fun SettingsScreen() {
+private fun SettingsScreen(
+    biometricEnabled: Boolean,
+    onEnableBiometric: (((Boolean, String?) -> Unit) -> Unit),
+    onDisableBiometric: () -> Unit
+) {
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp)
     ) {
@@ -503,6 +605,31 @@ private fun SettingsScreen() {
         Text("Manage your Veylora experience.", color = VeyloraMuted, fontSize = 13.sp)
         Spacer(Modifier.height(24.dp))
         SettingsItem("Security", "Master password protection enabled", "◈")
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (biometricEnabled) "Biometric unlock is enabled on this device."
+            else "Enable strong biometric unlock for quicker access.",
+            color = VeyloraMuted, fontSize = 12.sp, lineHeight = 17.sp
+        )
+        Spacer(Modifier.height(8.dp))
+        if (biometricEnabled) {
+            TextButton(onClick = onDisableBiometric) {
+                Text("Disable biometric unlock", color = VeyloraGold)
+            }
+        } else {
+            var biometricMessage by remember { mutableStateOf<String?>(null) }
+            Button(
+                onClick = { onEnableBiometric { success, message ->
+                    biometricMessage = if (success) "Biometric unlock enabled." else message
+                } },
+                colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold, contentColor = VeyloraBlack)
+            ) {
+                Text("Enable biometric unlock")
+            }
+            if (biometricMessage != null) {
+                Text(biometricMessage!!, color = VeyloraMuted, fontSize = 11.sp)
+            }
+        }
         SettingsItem("Appearance", "Luxury dark theme", "◐")
         SettingsItem("Backup & restore", "Encrypted backup options", "↗")
         SettingsItem("About Veylora", "Version 1.0.0 · Your Digital Life, Secured.", "ⓘ")
