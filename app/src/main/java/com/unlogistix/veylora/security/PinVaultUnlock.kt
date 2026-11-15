@@ -166,7 +166,9 @@ object PinVaultUnlock {
     }
 
     private fun deriveWrappingKey(key: SecretKey, pin: CharArray): ByteArray {
-        val pinBytes = String(pin).toByteArray(StandardCharsets.UTF_8)
+        // PINs are restricted to ASCII digits, so encode directly without
+        // creating an immutable String copy that cannot be reliably cleared.
+        val pinBytes = ByteArray(pin.size) { index -> pin[index].code.toByte() }
         return try {
             Mac.getInstance("HmacSHA256").run {
                 init(key)
