@@ -72,6 +72,7 @@ object BiometricVaultUnlock {
     fun finishEnrollment(context: Context, authenticatedCipher: Cipher) {
         val key = VaultSession.keyCopy()
         try {
+            authenticatedCipher.updateAAD("VEYlora|biometric-vault-key|v1".toByteArray(Charsets.UTF_8))
             val encrypted = authenticatedCipher.doFinal(key)
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val saved = prefs.edit()
@@ -103,6 +104,7 @@ object BiometricVaultUnlock {
     fun finishUnlock(cipher: Cipher, ciphertext: ByteArray) {
         var key: ByteArray? = null
         try {
+            cipher.updateAAD("VEYlora|biometric-vault-key|v1".toByteArray(Charsets.UTF_8))
             key = cipher.doFinal(ciphertext)
             if (key.size != 32) throw IllegalStateException("Invalid vault key.")
             VaultSession.unlockWith(key)

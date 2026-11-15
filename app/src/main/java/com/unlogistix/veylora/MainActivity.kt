@@ -18,6 +18,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.unlogistix.veylora.security.InvalidMasterPasswordException
 import com.unlogistix.veylora.security.BiometricVaultUnlock
+import com.unlogistix.veylora.security.PinVaultUnlock
+import com.unlogistix.veylora.security.PinUnlockResult
 import com.unlogistix.veylora.security.VaultCrypto
 import com.unlogistix.veylora.security.VaultSession
 import javax.crypto.Cipher
@@ -78,6 +80,11 @@ class MainActivity : FragmentActivity() {
 
 
     fun enableBiometricUnlock(onResult: (Boolean, String?) -> Unit) {
+        val capability = BiometricManager.from(this).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+        if (capability != BiometricManager.BIOMETRIC_SUCCESS) {
+            onResult(false, "Strong biometrics are not available or enrolled on this device.")
+            return
+        }
         try {
             val cipher = BiometricVaultUnlock.prepareEnrollmentCipher()
             val prompt = biometricPrompt(
@@ -183,7 +190,14 @@ private fun VeyloraApp(sessionVersion: Int) {
     if (unlocked) {
         VeyloraDashboard(activity)
     } else {
-        VaultGateScreen(initialized = initialized, biometricAvailable = BiometricVaultUnlock.isEnabled(context), activity = activity, onUnlocked = { unlocked = true })
+        VaultGateScreen(
+            initialized = initialized,
+            biometricAvailable = BiometricVaultUnlock.isEnabled(context),
+            pinAvailable = PinVaultUnlock.isEnabled(context),
+            pinLockedOut = PinVaultUnlock.wasLockedOut(context),
+            activity = activity,
+            onUnlocked = { unlocked = true }
+        )
     }
 }
 
@@ -244,7 +258,14 @@ private fun VeyloraDashboard(activity: MainActivity?) {
                     VeyloraTab.SETTINGS -> SettingsScreen(
                         biometricEnabled = activity?.let { BiometricVaultUnlock.isEnabled(it) } == true,
                         onEnableBiometric = { callback -> activity?.enableBiometricUnlock(callback) },
-                        onDisableBiometric = { activity?.let { BiometricVaultUnlock.disable(it) } }
+                        onDisableBiometric = { activity?.let { BiometricVaultUnlock.disable(it) } },
+                        pinEnabled = activity?.let { PinVaultUnlock.isEnabled(it) } == true,
+                        onEnablePin = { value ->
+                            try {
+                                activity?.let { PinVaultUnlock.enable(it, value.toCharArray()); true } ?: false
+                            } catch (_: Exception) { false }
+                        },
+                        onDisablePin = { activity?.let { PinVaultUnlock.disable(it) } }
                     )
                 }
             }
@@ -275,10 +296,19 @@ private fun VeyloraDashboard(activity: MainActivity?) {
 
 
 @Composable
-private fun VaultGateScreen(initialized: Boolean, biometricAvailable: Boolean, activity: MainActivity?, onUnlocked: () -> Unit) {
+private fun VaultGateScreen(
+    initialized: Boolean,
+    biometricAvailable: Boolean,
+    pinAvailable: Boolean,
+    pinLockedOut: Boolean,
+    activity: MainActivity?,
+    onUnlocked: () -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var password by remember { mutableStateOf("") }
+    var pin by remember { mutableStateOf("") }
+    var pinEnabled by remember { mutableStateOf(pinAvailable) }
     var confirmation by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -313,6 +343,11 @@ private fun VaultGateScreen(initialized: Boolean, biometricAvailable: Boolean, a
             color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp
         )
         Spacer(Modifier.height(24.dp))
+        if (initialized && pinLockedOut) {
+            Text("PIN unlock was disabled after five incorrect attempts. Use your master password.",
+                color = VeyloraGold, fontSize = 12.sp, lineHeight = 17.sp)
+            Spacer(Modifier.height(12.dp))
+        }
         OutlinedTextField(
             value = password,
             onValueChange = { password = it; error = null },
@@ -324,6 +359,49 @@ private fun VaultGateScreen(initialized: Boolean, biometricAvailable: Boolean, a
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             shape = RoundedCornerShape(14.dp)
         )
+        if (initialized && pinEnabled) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = pin,
+                onValueChange = { value -> if (value.length <= 12 && value.all(Char::isDigit)) { pin = value; error = null } },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("App PIN") },
+                placeholder = { Text("Enter your 6–12 digit PIN") },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                shape = RoundedCornerShape(14.dp)
+            )
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = {
+                    if (pin.length !in 6..12) {
+                        error = "Enter your 6–12 digit PIN."
+                    } else if (!busy) {
+                        busy = true
+                        val enteredPin = pin.toCharArray()
+                        pin = ""
+                        scope.launch {
+                            val result = withContext(Dispatchers.Default) {
+                                try { PinVaultUnlock.unlock(context, enteredPin) }
+                                catch (_: Exception) { PinUnlockResult.WRONG_PIN }
+                                finally { enteredPin.fill('\\u0000') }
+                            }
+                            busy = false
+                            when (result) {
+                                PinUnlockResult.SUCCESS -> onUnlocked()
+                                PinUnlockResult.WRONG_PIN -> error = "Incorrect PIN. Try again or use your master password."
+                                PinUnlockResult.LOCKED_OUT -> { pinEnabled = false; error = "Five incorrect attempts. Unlock with your master password." }
+                            }
+                        }
+                    }
+                },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = VeyloraSurface, contentColor = VeyloraGold)
+            ) { Text(if (busy) "Checking PIN…" else "Unlock with PIN") }
+        }
         if (!initialized) {
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
@@ -596,8 +674,15 @@ private fun SearchScreen(query: String, onQueryChange: (String) -> Unit) {
 private fun SettingsScreen(
     biometricEnabled: Boolean,
     onEnableBiometric: (((Boolean, String?) -> Unit) -> Unit),
-    onDisableBiometric: () -> Unit
+    onDisableBiometric: () -> Unit,
+    pinEnabled: Boolean,
+    onEnablePin: (String) -> Boolean,
+    onDisablePin: () -> Unit
 ) {
+    var showPinDialog by remember { mutableStateOf(false) }
+    var pinInput by remember { mutableStateOf("") }
+    var pinConfirmation by remember { mutableStateOf("") }
+    var pinMessage by remember { mutableStateOf<String?>(null) }
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp)
     ) {
@@ -607,6 +692,24 @@ private fun SettingsScreen(
         Spacer(Modifier.height(24.dp))
         SettingsItem("Security", "Master password protection enabled", "◈")
         Spacer(Modifier.height(8.dp))
+        Text(
+            if (pinEnabled) "App PIN is enabled. Five incorrect attempts disable PIN unlock and require the master password."
+            else "Set a 6–12 digit app PIN for convenient local unlock.",
+            color = VeyloraMuted, fontSize = 12.sp, lineHeight = 17.sp
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = { pinInput = ""; pinConfirmation = ""; pinMessage = null; showPinDialog = true },
+                colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold, contentColor = VeyloraBlack)
+            ) { Text(if (pinEnabled) "Change PIN" else "Enable PIN") }
+            if (pinEnabled) {
+                TextButton(onClick = { onDisablePin(); pinMessage = "App PIN disabled." }) {
+                    Text("Disable", color = VeyloraGold)
+                }
+            }
+        }
+        if (pinMessage != null) Text(pinMessage!!, color = VeyloraMuted, fontSize = 11.sp)
+        Spacer(Modifier.height(12.dp))
         Text(
             if (biometricEnabled) "Biometric unlock is enabled on this device."
             else "Enable strong biometric unlock for quicker access.",
@@ -635,8 +738,61 @@ private fun SettingsScreen(
         SettingsItem("Backup & restore", "Encrypted backup options", "↗")
         SettingsItem("About Veylora", "Version 1.0.0 · Your Digital Life, Secured.", "ⓘ")
         Spacer(Modifier.height(20.dp))
-        Text("PIN, biometrics, encrypted account storage and recovery are still being developed.",
+        Text("PIN and biometric unlock are convenience methods only. Your master password remains the recovery method.",
             color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
+    }
+    if (showPinDialog) {
+        AlertDialog(
+            onDismissRequest = { showPinDialog = false; pinInput = ""; pinConfirmation = "" },
+            containerColor = VeyloraSurface,
+            title = { Text(if (pinEnabled) "Change app PIN" else "Set app PIN", color = VeyloraText) },
+            text = {
+                Column {
+                    Text("Choose 6–12 digits. This PIN unlocks only this device and is not your master password.",
+                        color = VeyloraMuted, fontSize = 12.sp, lineHeight = 17.sp)
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = pinInput,
+                        onValueChange = { if (it.length <= 12 && it.all(Char::isDigit)) pinInput = it },
+                        singleLine = true,
+                        label = { Text("New PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = pinConfirmation,
+                        onValueChange = { if (it.length <= 12 && it.all(Char::isDigit)) pinConfirmation = it },
+                        singleLine = true,
+                        label = { Text("Confirm PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
+                    )
+                    if (pinMessage != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(pinMessage!!, color = Color(0xFFFF8A80), fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pinMessage = when {
+                        pinInput.length !in 6..12 -> "PIN must contain 6–12 digits."
+                        pinInput != pinConfirmation -> "The PINs do not match."
+                        !onEnablePin(pinInput) -> "Could not enable PIN. Try again or use your master password."
+                        else -> null
+                    }
+                    if (pinMessage == null) {
+                        pinInput = ""; pinConfirmation = ""; showPinDialog = false
+                    }
+                }) { Text("Save PIN", color = VeyloraGold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPinDialog = false; pinInput = ""; pinConfirmation = "" }) {
+                    Text("Cancel", color = VeyloraMuted)
+                }
+            }
+        )
     }
 }
 
