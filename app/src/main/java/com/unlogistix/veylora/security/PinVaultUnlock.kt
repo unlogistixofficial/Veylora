@@ -93,7 +93,7 @@ object PinVaultUnlock {
             if (prefs.getBoolean(KEY_LOCKED_OUT, false) ||
                 prefs.getInt(KEY_ATTEMPTS, 0) >= MAX_ATTEMPTS ||
                 !isEnabled(context)
-            ) return UnlockResult.LOCKED_OUT
+            ) return PinUnlockResult.LOCKED_OUT
 
             val iv = decode(prefs.getString(KEY_IV, null))
             val ciphertext = decode(prefs.getString(KEY_CIPHERTEXT, null))
@@ -109,15 +109,15 @@ object PinVaultUnlock {
                 if (vaultKey.size != 32) throw IllegalStateException("Invalid wrapped vault key.")
                 VaultSession.unlockWith(vaultKey)
                 prefs.edit().putInt(KEY_ATTEMPTS, 0).commit()
-                return UnlockResult.SUCCESS
+                return PinUnlockResult.SUCCESS
             } catch (_: AEADBadTagException) {
                 val attempts = prefs.getInt(KEY_ATTEMPTS, 0) + 1
                 if (attempts >= MAX_ATTEMPTS) {
                     lockOut(context)
-                    return UnlockResult.LOCKED_OUT
+                    return PinUnlockResult.LOCKED_OUT
                 }
                 prefs.edit().putInt(KEY_ATTEMPTS, attempts).commit()
-                return UnlockResult.WRONG_PIN
+                return PinUnlockResult.WRONG_PIN
             } finally {
                 iv.fill(0)
                 ciphertext.fill(0)
