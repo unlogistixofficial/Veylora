@@ -26,9 +26,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.14.4"
+          gradle-version: "9.3.1"
 
-      - name: Install Android SDK 36
+      - name: Install Android SDK 37
         shell: bash
         run: |
           set -euo pipefail
@@ -41,7 +41,7 @@ jobs:
             exit 1
           fi
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-36" "build-tools;36.0.0"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-37.0" "build-tools;36.0.0"
 
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
