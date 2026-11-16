@@ -32,6 +32,13 @@ data class AccountCustomField(
     val value: String
 )
 
+data class VaultAttachment(
+    val id: String = UUID.randomUUID().toString(),
+    val displayName: String,
+    val mimeType: String,
+    val sizeBytes: Long
+)
+
 data class VaultAccount(
     val id: String = UUID.randomUUID().toString(),
     val title: String,
@@ -41,7 +48,8 @@ data class VaultAccount(
     val notes: String = "",
     val category: String = "Other",
     val customFields: List<AccountCustomField> = emptyList(),
-    val createdAt: Long = System.currentTimeMillis(),
+    val attachments: List<VaultAttachment> = emptyList(),
+    val createdAt = System.currentTimeMillis(),
     val updatedAt: Long = createdAt
 )
 
@@ -54,6 +62,9 @@ object AccountVaultStore {
     private const val MAX_FILE_BYTES = 5 * 1024 * 1024
     private const val MAX_ACCOUNTS = 10_000
     private const val MAX_FIELD_LENGTH = 100_000
+    private const val MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+    private const val ATTACHMENT_DIR = "veylora_screenshots"
+    private val ATTACHMENT_MAGIC = byteArrayOf(0x56, 0x45, 0x59, 0x53, 0x43, 0x52, 0x31)
     private val MAGIC = byteArrayOf(0x56, 0x45, 0x59, 0x4c, 0x4f, 0x52, 0x41, 0x31)
     private val random = SecureRandom()
 
@@ -137,6 +148,14 @@ object AccountVaultStore {
                             put(JSONObject().put("id", field.id).put("label", field.label).put("value", field.value))
                         }
                     })
+                    .put("attachments", JSONArray().apply {
+                        account.attachments.forEach { attachment ->
+                            put(JSONObject().put("id", attachment.id)
+                                .put("displayName", attachment.displayName)
+                                .put("mimeType", attachment.mimeType)
+                                .put("sizeBytes", attachment.sizeBytes))
+                        }
+                    })
                     .put("createdAt", account.createdAt)
                     .put("updatedAt", account.updatedAt)
             )
@@ -197,6 +216,145 @@ object AccountVaultStore {
     }
 
     @Synchronized
+    fun addScreenshot(context: Context, accountId: String, uri: android.net.Uri, displayName: String): VaultAttachment {
+        val accounts = load(context).toMutableList()
+        val index = accounts.indexOfFirst { it.id == accountId }
+        if (index < 0) throw GeneralSecurityException("The account no longer exists.")
+        val account = accounts[index]
+        if (account.attachments.size >= 20) throw GeneralSecurityException("An account can have at most 20 screenshots.")
+
+        val resolver = context.applicationContext.contentResolver
+        val mimeType = resolver.getType(uri)?.lowercase()
+        if (mimeType !in setOf("image/jpeg", "image/png", "image/webp")) {
+            throw GeneralSecurityException("Choose a JPEG, PNG, or WebP screenshot.")
+        }
+        val input = resolver.openInputStream(uri)
+            ?: throw GeneralSecurityException("Could not read the selected screenshot.")
+        val plain = input.use { stream ->
+            val output = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            var total = 0
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                total += count
+                if (total > MAX_ATTACHMENT_BYTES) {
+                    buffer.fill(0)
+                    throw GeneralSecurityException("Screenshots must be 8 MB or smaller.")
+                }
+                output.write(buffer, 0, count)
+            }
+            buffer.fill(0)
+            output.toByteArray()
+        }
+        if (plain.isEmpty()) throw GeneralSecurityException("The selected screenshot is empty.")
+
+        val safeName = displayName
+            .substringAfterLast('/')
+            .filter { it.isLetterOrDigit() || it == '.' || it == '-' || it == '_' || it == ' ' }
+            .take(180)
+            .ifBlank { "Screenshot" }
+        val attachment = VaultAttachment(
+            displayName = safeName,
+            mimeType = mimeType!!,
+            sizeBytes = plain.size.toLong()
+        )
+        val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
+        var key: ByteArray? = null
+        var encrypted: ByteArray? = null
+        try {
+            key = VaultSession.keyCopy()
+            if (key.size != KEY_BYTES) throw GeneralSecurityException("Vault key has an invalid length.")
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+            cipher.updateAAD(attachmentAad(accountId, attachment.id))
+            encrypted = cipher.doFinal(plain)
+            val envelope = ByteBuffer.allocate(ATTACHMENT_MAGIC.size + NONCE_BYTES + encrypted.size)
+                .put(ATTACHMENT_MAGIC).put(nonce).put(encrypted).array()
+            try {
+                atomicWriteAttachment(context, attachment.id, envelope)
+            } finally {
+                envelope.fill(0)
+            }
+            accounts[index] = account.copy(
+                attachments = account.attachments + attachment,
+                updatedAt = System.currentTimeMillis()
+            )
+            try {
+                save(context, accounts)
+            } catch (error: Exception) {
+                attachmentFile(context, attachment.id).delete()
+                throw error
+            }
+            return attachment
+        } finally {
+            plain.fill(0)
+            nonce.fill(0)
+            key?.fill(0)
+            encrypted?.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun removeScreenshot(context: Context, accountId: String, attachmentId: String) {
+        val accounts = load(context).toMutableList()
+        val index = accounts.indexOfFirst { it.id == accountId }
+        if (index < 0) return
+        val account = accounts[index]
+        if (account.attachments.none { it.id == attachmentId }) return
+        accounts[index] = account.copy(
+            attachments = account.attachments.filterNot { it.id == attachmentId },
+            updatedAt = System.currentTimeMillis()
+        )
+        save(context, accounts)
+        val file = attachmentFile(context, attachmentId)
+        if (file.exists() && !file.delete()) {
+            throw GeneralSecurityException("Screenshot was detached, but its encrypted file could not be removed.")
+        }
+    }
+
+    @Synchronized
+    fun readScreenshot(context: Context, accountId: String, attachmentId: String): ByteArray {
+        val account = load(context).firstOrNull { it.id == accountId }
+            ?: throw GeneralSecurityException("Account not found.")
+        val attachment = account.attachments.firstOrNull { it.id == attachmentId }
+            ?: throw GeneralSecurityException("Screenshot not found.")
+        val file = attachmentFile(context, attachmentId)
+        if (!file.isFile || file.length() !in (ATTACHMENT_MAGIC.size + NONCE_BYTES + 16).toLong()..(MAX_ATTACHMENT_BYTES + ATTACHMENT_MAGIC.size + NONCE_BYTES + 16).toLong()) {
+            throw GeneralSecurityException("Encrypted screenshot file is missing or invalid.")
+        }
+        val envelope = FileInputStream(file).use { it.readBytes() }
+        var key: ByteArray? = null
+        try {
+            val headerSize = ATTACHMENT_MAGIC.size + NONCE_BYTES
+            if (envelope.size < headerSize + 16 ||
+                !envelope.copyOfRange(0, ATTACHMENT_MAGIC.size).contentEquals(ATTACHMENT_MAGIC)) {
+                throw GeneralSecurityException("Encrypted screenshot format is invalid.")
+            }
+            val nonce = envelope.copyOfRange(ATTACHMENT_MAGIC.size, headerSize)
+            val ciphertext = envelope.copyOfRange(headerSize, envelope.size)
+            try {
+                key = VaultSession.keyCopy()
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+                cipher.updateAAD(attachmentAad(accountId, attachmentId))
+                val plain = cipher.doFinal(ciphertext)
+                if (plain.size.toLong() != attachment.sizeBytes) {
+                    plain.fill(0)
+                    throw GeneralSecurityException("Screenshot size does not match its encrypted metadata.")
+                }
+                return plain
+            } finally {
+                nonce.fill(0)
+                ciphertext.fill(0)
+            }
+        } finally {
+            key?.fill(0)
+            envelope.fill(0)
+        }
+    }
+
+    @Synchronized
     fun clear(context: Context) {
         val file = dataFile(context)
         if (file.exists() && !file.delete()) {
@@ -229,6 +387,7 @@ object AccountVaultStore {
                     notes = item.optString("notes", ""),
                     category = item.optString("category", "Other"),
                     customFields = decodeCustomFields(item.optJSONArray("customFields")),
+                    attachments = decodeAttachments(item.optJSONArray("attachments")),
                     createdAt = item.optLong("createdAt", 0L),
                     updatedAt = item.optLong("updatedAt", 0L)
                 )
@@ -271,6 +430,35 @@ object AccountVaultStore {
         return fields
     }
 
+    private fun decodeAttachments(array: JSONArray?): List<VaultAttachment> {
+        if (array == null) return emptyList()
+        if (array.length() > 20) throw GeneralSecurityException("Too many attachments in an account.")
+        val result = ArrayList<VaultAttachment>(array.length())
+        val ids = HashSet<String>(array.length())
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index)
+                ?: throw GeneralSecurityException("An attachment record is invalid.")
+            val attachment = try {
+                VaultAttachment(
+                    id = item.getString("id"),
+                    displayName = item.getString("displayName"),
+                    mimeType = item.getString("mimeType"),
+                    sizeBytes = item.getLong("sizeBytes")
+                )
+            } catch (error: Exception) {
+                throw GeneralSecurityException("An attachment record is corrupted.", error)
+            }
+            if (attachment.id.isBlank() || attachment.id.length > 64 || !ids.add(attachment.id) ||
+                attachment.displayName.isBlank() || attachment.displayName.length > 180 ||
+                attachment.mimeType != "image/jpeg" && attachment.mimeType != "image/png" &&
+                attachment.mimeType != "image/webp" ||
+                attachment.sizeBytes !in 1..(8L * 1024 * 1024)
+            ) throw GeneralSecurityException("An attachment record contains invalid data.")
+            result.add(attachment)
+        }
+        return result
+    }
+
     private fun validate(account: VaultAccount) {
         require(account.id.isNotBlank() && account.id.length <= 64) { "Invalid account ID." }
         require(account.title.isNotBlank() && account.title.length <= 200) { "Account title is required (maximum 200 characters)." }
@@ -280,6 +468,14 @@ object AccountVaultStore {
         require(account.notes.length <= MAX_FIELD_LENGTH) { "Notes are too long." }
         require(account.category.isNotBlank() && account.category.length <= 100) { "Invalid category." }
         require(account.customFields.size <= 30) { "An account can have at most 30 custom fields." }
+        require(account.attachments.size <= 20) { "An account can have at most 20 screenshot attachments." }
+        val attachmentIds = HashSet<String>(account.attachments.size)
+        account.attachments.forEach { attachment ->
+            require(attachment.id.isNotBlank() && attachment.id.length <= 64 && attachmentIds.add(attachment.id)) { "Invalid attachment ID." }
+            require(attachment.displayName.isNotBlank() && attachment.displayName.length <= 180) { "Invalid attachment name." }
+            require(attachment.mimeType in setOf("image/jpeg", "image/png", "image/webp")) { "Unsupported screenshot format." }
+            require(attachment.sizeBytes in 1..(8L * 1024 * 1024)) { "Screenshot size is invalid." }
+        }
         val fieldIds = HashSet<String>(account.customFields.size)
         account.customFields.forEach { field ->
             require(field.id.isNotBlank() && field.id.length <= 64 && fieldIds.add(field.id)) { "Invalid custom field ID." }
@@ -315,6 +511,37 @@ object AccountVaultStore {
             temporary.delete()
             if (error is GeneralSecurityException) throw error
             throw GeneralSecurityException("Could not safely save encrypted account data.", error)
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    private fun attachmentAad(accountId: String, attachmentId: String): ByteArray =
+        "VEYlora|screenshot|v1|$accountId|$attachmentId".toByteArray(StandardCharsets.UTF_8)
+
+    private fun attachmentFile(context: Context, attachmentId: String): File {
+        require(attachmentId.matches(Regex("[A-Za-z0-9-]{1,64}"))) { "Invalid attachment ID." }
+        return File(File(context.applicationContext.noBackupFilesDir, ATTACHMENT_DIR), "$attachmentId.bin")
+    }
+
+    private fun atomicWriteAttachment(context: Context, attachmentId: String, bytes: ByteArray) {
+        val target = attachmentFile(context, attachmentId)
+        val directory = target.parentFile ?: throw GeneralSecurityException("Screenshot storage directory is unavailable.")
+        if (!directory.exists() && !directory.mkdirs()) throw GeneralSecurityException("Could not create screenshot storage.")
+        val temporary = File(directory, "$attachmentId.tmp")
+        try {
+            FileOutputStream(temporary, false).use { output ->
+                output.write(bytes)
+                output.fd.sync()
+            }
+            try {
+                Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } catch (error: Exception) {
+            temporary.delete()
+            throw GeneralSecurityException("Could not safely save encrypted screenshot.", error)
         } finally {
             if (temporary.exists()) temporary.delete()
         }
