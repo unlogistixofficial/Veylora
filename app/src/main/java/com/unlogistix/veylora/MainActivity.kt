@@ -1331,6 +1331,7 @@ private fun SettingsScreen(
     var showPinDialog by remember { mutableStateOf(false) }
     var backupAction by remember { mutableStateOf<String?>(null) }
     var backupPassword by remember { mutableStateOf("") }
+    var restoreAcknowledged by remember { mutableStateOf(false) }
     var backupMessage by remember { mutableStateOf<String?>(null) }
     var pinInput by remember { mutableStateOf("") }
     var pinConfirmation by remember { mutableStateOf("") }
@@ -1400,7 +1401,12 @@ private fun SettingsScreen(
                 colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold, contentColor = VeyloraBlack)
             ) { Text("Create backup") }
             TextButton(
-                onClick = { backupAction = "restore"; backupPassword = ""; backupMessage = null }
+                onClick = {
+                    backupAction = "restore"
+                    backupPassword = ""
+                    restoreAcknowledged = false
+                    backupMessage = null
+                }
             ) { Text("Restore backup", color = VeyloraGold) }
         }
         if (backupMessage != null) {
@@ -1422,7 +1428,11 @@ private fun SettingsScreen(
     if (backupAction != null) {
         val action = backupAction!!
         AlertDialog(
-            onDismissRequest = { backupAction = null; backupPassword = "" },
+            onDismissRequest = {
+                backupAction = null
+                backupPassword = ""
+                restoreAcknowledged = false
+            },
             containerColor = VeyloraSurface,
             title = {
                 Text(if (action == "export") "Create encrypted backup" else "Restore encrypted backup", color = VeyloraText)
@@ -1437,6 +1447,21 @@ private fun SettingsScreen(
                         color = VeyloraMuted, fontSize = 12.sp, lineHeight = 17.sp
                     )
                     Spacer(Modifier.height(12.dp))
+                    if (action == "restore") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            androidx.compose.material3.Checkbox(
+                                checked = restoreAcknowledged,
+                                onCheckedChange = { restoreAcknowledged = it }
+                            )
+                            Text(
+                                "I understand this will replace the current vault on this device.",
+                                color = VeyloraMuted,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                    }
                     OutlinedTextField(
                         value = backupPassword,
                         onValueChange = { backupPassword = it.take(128) },
@@ -1449,7 +1474,9 @@ private fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    if (backupPassword.length < 12) {
+                    if (action == "restore" && !restoreAcknowledged) {
+                        backupMessage = "Please confirm that you understand the current vault will be replaced."
+                    } else if (backupPassword.length < 12) {
                         backupMessage = "Backup password must contain at least 12 characters."
                     } else {
                         val password = backupPassword
@@ -1470,7 +1497,11 @@ private fun SettingsScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { backupAction = null; backupPassword = "" }) {
+                TextButton(onClick = {
+                    backupAction = null
+                    backupPassword = ""
+                    restoreAcknowledged = false
+                }) {
                     Text("Cancel", color = VeyloraMuted)
                 }
             }
