@@ -94,6 +94,15 @@ private enum class VeyloraTab(val label: String, val symbol: String) {
 
 class MainActivity : FragmentActivity() {
     private var sessionVersion by mutableIntStateOf(0)
+    private var externalPickerActive = false
+
+    fun beginExternalPicker() {
+        externalPickerActive = true
+    }
+
+    fun finishExternalPicker() {
+        externalPickerActive = false
+    }
 
 
     fun enableBiometricUnlock(onResult: (Boolean, String?) -> Unit) {
@@ -177,9 +186,16 @@ class MainActivity : FragmentActivity() {
             .setNegativeButtonText("Cancel")
             .build()
 
+    override fun onStart() {
+        super.onStart()
+        externalPickerActive = false
+    }
+
     override fun onStop() {
-        VaultSession.lock()
-        sessionVersion++
+        if (!externalPickerActive) {
+            VaultSession.lock()
+            sessionVersion++
+        }
         super.onStop()
     }
 
@@ -922,6 +938,7 @@ private fun AccountEditorDialog(
         mutableStateListOf<VaultAttachment>().apply { addAll(account?.attachments.orEmpty()) }
     }
     val context = LocalContext.current
+    val activity = context as? MainActivity
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -929,6 +946,7 @@ private fun AccountEditorDialog(
     val screenshotPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
+        activity?.finishExternalPicker()
         val existingAccount = account
         if (uri != null && existingAccount != null) {
             scope.launch {
@@ -1137,7 +1155,10 @@ private fun AccountEditorDialog(
                     TextButton(
                         onClick = { screenshotPicker.launch("image/*") },
                         enabled = attachments.size < 20
-                    ) { Text("＋ Attach screenshot", color = VeyloraGold) }
+                    ) {
+                        activity?.beginExternalPicker()
+                        screenshotPicker.launch("image/*")
+                    }
                     Text("JPEG, PNG or WebP • Maximum 8 MB each • Encrypted on this device",
                         color = VeyloraMuted, fontSize = 10.sp, lineHeight = 14.sp)
                 }
