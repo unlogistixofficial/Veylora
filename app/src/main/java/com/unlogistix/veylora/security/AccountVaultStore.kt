@@ -532,8 +532,13 @@ object AccountVaultStore {
             val writtenFiles = ArrayList<File>(pendingWrites.size)
             try {
                 pendingWrites.forEach { (accountId, attachment, bytes) ->
+                    val targetFile = attachmentFile(context, attachment.id)
+                    if (targetFile.exists()) {
+                        throw GeneralSecurityException("A generated screenshot identifier already exists.")
+                    }
+                    // Register before writing so rollback also removes a partially created file.
+                    writtenFiles.add(targetFile)
                     writeScreenshotBytes(context, accountId, attachment, bytes)
-                    writtenFiles.add(attachmentFile(context, attachment.id))
                 }
                 save(context, remappedAccounts)
             } catch (error: Exception) {
