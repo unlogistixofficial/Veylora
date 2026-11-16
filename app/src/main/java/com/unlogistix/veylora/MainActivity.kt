@@ -789,12 +789,20 @@ private fun HomeScreen(
     onToggleFavorite: (VaultAccount) -> Unit,
     onDelete: (VaultAccount) -> Unit
 ) {
-    val folders = (
-        listOf("Facebook", "Instagram", "TikTok", "Telegram", "Email",
-            "Website", "Banking", "Shopping", "Gaming", "Work",
-            "Social", "Finance", "Entertainment", "Other") +
-            accounts.map { it.category.trim() }.filter { it.isNotBlank() }
-        ).distinct()
+    val standardFolders = listOf("Facebook", "Instagram", "TikTok", "Telegram", "Email", "Website")
+    val additionalFolders = listOf(
+        "Banking", "Shopping", "Gaming", "Work", "Social",
+        "Finance", "Entertainment", "Other"
+    )
+    val savedCustomFolders = accounts.map { it.category.trim() }
+        .filter { it.isNotBlank() && it !in standardFolders && it !in additionalFolders }
+        .distinct()
+    val allFolders = (standardFolders + additionalFolders + savedCustomFolders).distinct()
+    val usedAdditionalFolders = allFolders.filter {
+        it !in standardFolders && accounts.any { account ->
+            account.category.equals(it, ignoreCase = true)
+        }
+    }
     val symbols = mapOf(
         "Facebook" to "f", "Instagram" to "◎", "TikTok" to "♪", "Telegram" to "➤",
         "Email" to "✉", "Website" to "⌘", "Banking" to "▤", "Shopping" to "◇",
@@ -802,134 +810,195 @@ private fun HomeScreen(
         "Finance" to "▤", "Entertainment" to "▶", "Other" to "＋"
     )
     var selectedFolder by remember { mutableStateOf<String?>(null) }
+    var showAllFolders by remember { mutableStateOf(false) }
     val folderAccounts = selectedFolder?.let { folder ->
         accounts.filter { it.category.equals(folder, ignoreCase = true) }
     }.orEmpty()
+    val visibleFolders = if (showAllFolders) {
+        allFolders
+    } else {
+        (standardFolders + usedAdditionalFolders).distinct()
+    }
 
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+        modifier = Modifier.fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 18.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text("VEY LORA".replace(" ", ""), color = VeyloraText, fontSize = 20.sp,
-                    letterSpacing = 3.sp, fontWeight = FontWeight.SemiBold)
-                Text("YOUR PRIVATE SPACE", color = VeyloraMuted, fontSize = 9.sp,
-                    letterSpacing = 2.sp)
+            Box(
+                modifier = Modifier.size(42.dp).background(VeyloraSurface, RoundedCornerShape(13.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("V", color = VeyloraGold, fontSize = 24.sp, fontWeight = FontWeight.Light)
             }
-            Box(Modifier.size(44.dp).background(VeyloraSurface, CircleShape),
-                contentAlignment = Alignment.Center) {
-                Text("V", color = VeyloraGold, fontSize = 25.sp, fontWeight = FontWeight.Light)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Veylora", color = VeyloraText, fontSize = 21.sp,
+                    letterSpacing = 1.2.sp, fontWeight = FontWeight.SemiBold)
+                Text("YOUR PRIVATE VAULT", color = VeyloraMuted, fontSize = 9.sp,
+                    letterSpacing = 1.7.sp)
             }
+            Text(
+                if (accountsLoaded) "${accounts.size} ITEMS" else "LOADING",
+                color = VeyloraGold, fontSize = 10.sp, letterSpacing = 1.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         }
-        Spacer(Modifier.height(24.dp))
-        Text("Your digital life.", color = VeyloraText, fontSize = 27.sp,
-            lineHeight = 34.sp, fontWeight = FontWeight.Medium)
-        Text("Everything you value, organized in one secure place.",
-            color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp)
-        Spacer(Modifier.height(20.dp))
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF201D17))
-        ) {
-            Column(Modifier.padding(18.dp)) {
-                Text("PRIVATE VAULT", color = VeyloraGold, fontSize = 10.sp,
-                    letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(9.dp))
-                Text(if (accountsLoaded) "${accounts.size} saved items" else "Loading your vault…",
-                    color = VeyloraText, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-                Text("Your logins, notes and screenshots stay encrypted on this device.",
-                    color = VeyloraMuted, fontSize = 12.sp, lineHeight = 18.sp)
-                Spacer(Modifier.height(14.dp))
-                Button(
-                    onClick = { onAddClick(selectedFolder) },
-                    colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold,
-                        contentColor = VeyloraBlack),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("＋   Add new item", fontWeight = FontWeight.SemiBold) }
-            }
-        }
-        Spacer(Modifier.height(24.dp))
+
+        Spacer(Modifier.height(25.dp))
         if (selectedFolder == null) {
-            Text("YOUR FOLDERS", color = VeyloraMuted, fontSize = 10.sp,
-                letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(12.dp))
-            folders.chunked(2).forEach { pair ->
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Your vault", color = VeyloraText, fontSize = 27.sp,
+                fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(5.dp))
+            Text("Keep every account neatly organized.", color = VeyloraMuted, fontSize = 13.sp)
+            Spacer(Modifier.height(18.dp))
+            Button(
+                onClick = { onAddClick(null) },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = VeyloraGold, contentColor = VeyloraBlack
+                ),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Text("＋   Add account", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(Modifier.height(27.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Folders", color = VeyloraText, fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { showAllFolders = !showAllFolders }) {
+                    Text(
+                        if (showAllFolders) "Show less" else "View all",
+                        color = VeyloraGold, fontSize = 12.sp
+                    )
+                }
+            }
+            Spacer(Modifier.height(5.dp))
+            visibleFolders.chunked(2).forEach { pair ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     pair.forEach { folder ->
-                        val count = accounts.count { it.category.equals(folder, ignoreCase = true) }
+                        val count = accounts.count {
+                            it.category.equals(folder, ignoreCase = true)
+                        }
                         Card(
-                            modifier = Modifier.weight(1f).padding(bottom = 10.dp),
+                            modifier = Modifier.weight(1f).height(82.dp),
                             onClick = { selectedFolder = folder },
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(15.dp),
                             colors = CardDefaults.cardColors(containerColor = VeyloraSurface)
                         ) {
-                            Column(Modifier.fillMaxWidth().padding(15.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Box(
-                                    Modifier.size(38.dp).background(Color(0xFF28241D), RoundedCornerShape(12.dp)),
+                                    Modifier.size(38.dp).background(
+                                        Color(0xFF28241D), RoundedCornerShape(12.dp)
+                                    ),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text(symbols[folder] ?: "◇", color = VeyloraGold, fontSize = 19.sp)
+                                    Text(symbols[folder] ?: "◇", color = VeyloraGold, fontSize = 18.sp)
                                 }
-                                Spacer(Modifier.height(12.dp))
-                                Text(folder, color = VeyloraText, fontSize = 14.sp,
-                                    fontWeight = FontWeight.SemiBold)
-                                Text(if (accountsLoaded) "$count items" else "—",
-                                    color = VeyloraMuted, fontSize = 11.sp)
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        folder, color = VeyloraText, fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold, maxLines = 1
+                                    )
+                                    Text(
+                                        if (accountsLoaded) "$count items" else "—",
+                                        color = VeyloraMuted, fontSize = 10.sp
+                                    )
+                                }
                             }
                         }
                     }
                     if (pair.size == 1) Spacer(Modifier.weight(1f))
                 }
+                Spacer(Modifier.height(10.dp))
             }
-            Spacer(Modifier.height(8.dp))
-            Text("Choose a folder to view its saved accounts. You can add your own details and custom fields to every item.",
-                color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
+            if (!accountsLoaded) {
+                Text("Loading your encrypted accounts…", color = VeyloraMuted, fontSize = 11.sp)
+            }
         } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { selectedFolder = null }) {
-                    Text("‹ All folders", color = VeyloraGold)
-                }
-                Spacer(Modifier.weight(1f))
-                Text(selectedFolder!!.uppercase(), color = VeyloraMuted,
-                    fontSize = 10.sp, letterSpacing = 1.4.sp)
+            TextButton(onClick = { selectedFolder = null }) {
+                Text("‹  All folders", color = VeyloraGold)
             }
-            Text(selectedFolder!!, color = VeyloraText, fontSize = 25.sp,
+            Spacer(Modifier.height(4.dp))
+            Text(selectedFolder!!, color = VeyloraText, fontSize = 27.sp,
                 fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(12.dp))
+            Text(
+                if (accountsLoaded) "${folderAccounts.size} saved items" else "Loading…",
+                color = VeyloraMuted, fontSize = 12.sp
+            )
+            Spacer(Modifier.height(17.dp))
+            Button(
+                onClick = { onAddClick(selectedFolder) },
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = VeyloraGold, contentColor = VeyloraBlack
+                ),
+                shape = RoundedCornerShape(13.dp)
+            ) {
+                Text("＋   Add to ${selectedFolder!!}", fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(Modifier.height(16.dp))
             if (!accountsLoaded) {
                 Text("Loading encrypted records…", color = VeyloraMuted, fontSize = 13.sp)
             } else if (folderAccounts.isEmpty()) {
-                Text("No items in this folder yet. Add your first one here.",
-                    color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(15.dp),
+                    colors = CardDefaults.cardColors(containerColor = VeyloraSurface)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("No accounts yet", color = VeyloraText,
+                            fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(5.dp))
+                        Text("Add your first account to this folder.",
+                            color = VeyloraMuted, fontSize = 12.sp)
+                    }
+                }
             } else {
                 folderAccounts.forEach { account ->
                     Card(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
-                        shape = RoundedCornerShape(15.dp),
+                        shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(containerColor = VeyloraSurface)
                     ) {
-                        Column(Modifier.padding(14.dp)) {
+                        Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(account.title, color = VeyloraText, fontSize = 15.sp,
-                                    fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                                Column(Modifier.weight(1f)) {
+                                    Text(account.title, color = VeyloraText, fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        account.username.ifBlank {
+                                            account.website.ifBlank { account.category }
+                                        },
+                                        color = VeyloraMuted, fontSize = 11.sp
+                                    )
+                                }
                                 TextButton(onClick = { onToggleFavorite(account) }) {
                                     Text(if (account.isFavorite) "★" else "☆",
-                                        color = VeyloraGold, fontSize = 20.sp)
+                                        color = VeyloraGold, fontSize = 19.sp)
                                 }
                             }
-                            Text(account.username.ifBlank { account.website.ifBlank { account.category } },
-                                color = VeyloraMuted, fontSize = 12.sp)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 TextButton(onClick = { onEdit(account) }) {
                                     Text("Open / Edit", color = VeyloraGold)
@@ -942,23 +1011,12 @@ private fun HomeScreen(
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = { onAddClick(selectedFolder) },
-                colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold,
-                    contentColor = VeyloraBlack),
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("＋   Add to ${selectedFolder!!}") }
         }
-        Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OverviewCard(if (accountsLoaded) accounts.size.toString() else "—", "TOTAL ITEMS", Modifier.weight(1f))
-            OverviewCard(if (accountsLoaded) accounts.count { it.isFavorite }.toString() else "—",
-                "FAVORITES", Modifier.weight(1f))
-        }
-        Spacer(Modifier.height(16.dp))
-        Text("All information is encrypted before it is stored on this device.",
-            color = VeyloraMuted, fontSize = 10.sp, lineHeight = 15.sp)
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Encrypted and stored securely on this device.",
+            color = VeyloraMuted, fontSize = 10.sp
+        )
     }
 }
 
