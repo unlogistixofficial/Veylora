@@ -781,12 +781,14 @@ private fun HomeScreen(
 ) {
     val folders = listOf(
         "Facebook", "Instagram", "TikTok", "Telegram", "Email",
-        "Website", "Banking", "Shopping", "Gaming", "Work", "Other"
+        "Website", "Banking", "Shopping", "Gaming", "Work",
+        "Social", "Finance", "Entertainment", "Other"
     )
     val symbols = mapOf(
         "Facebook" to "f", "Instagram" to "◎", "TikTok" to "♪", "Telegram" to "➤",
         "Email" to "✉", "Website" to "⌘", "Banking" to "▤", "Shopping" to "◇",
-        "Gaming" to "✧", "Work" to "▣", "Other" to "＋"
+        "Gaming" to "✧", "Work" to "▣", "Social" to "◎",
+        "Finance" to "▤", "Entertainment" to "▶", "Other" to "＋"
     )
     var selectedFolder by remember { mutableStateOf<String?>(null) }
     val folderAccounts = selectedFolder?.let { folder ->
@@ -1136,8 +1138,24 @@ private fun AccountEditorDialog(
     var notes by remember(account?.id) { mutableStateOf(account?.notes.orEmpty()) }
     var category by remember(account?.id) { mutableStateOf(account?.category ?: initialCategory ?: "Other") }
     var categoryExpanded by remember { mutableStateOf(false) }
-    val customFields = remember(account?.id) {
-        mutableStateListOf<AccountCustomField>().apply { addAll(account?.customFields.orEmpty()) }
+    val customFields = remember(account?.id, initialCategory) {
+        mutableStateListOf<AccountCustomField>().apply {
+            addAll(account?.customFields.orEmpty())
+            if (account == null) {
+                val presets = when (initialCategory) {
+                    "Facebook", "Instagram", "TikTok" -> listOf("Email address", "Phone number")
+                    "Telegram" -> listOf("Phone number", "Recovery email")
+                    "Email" -> listOf("First name", "Last name", "Recovery email", "Recovery email password", "Phone number")
+                    "Website" -> listOf("Login URL", "Recovery email", "Security question")
+                    "Banking" -> listOf("Account holder", "Account number", "Branch", "Customer ID")
+                    "Shopping" -> listOf("Registered email", "Phone number", "Customer ID")
+                    "Gaming" -> listOf("Player ID", "Server", "Recovery email")
+                    "Work" -> listOf("Organization", "Employee ID", "Recovery email")
+                    else -> emptyList()
+                }
+                presets.forEach { add(AccountCustomField(label = it, value = "")) }
+            }
+        }
     }
     val attachments = remember(account?.id) {
         mutableStateListOf<VaultAttachment>().apply { addAll(account?.attachments.orEmpty()) }
@@ -1145,6 +1163,7 @@ private fun AccountEditorDialog(
     val pendingScreenshotUris = remember(account?.id) { mutableStateListOf<Uri>() }
     val context = LocalContext.current
     val activity = context as? MainActivity
+    val existingAccountId = account?.id
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -1164,7 +1183,8 @@ private fun AccountEditorDialog(
     }
     val categories = listOf(
         "Facebook", "Instagram", "TikTok", "Telegram", "Email",
-        "Website", "Banking", "Shopping", "Gaming", "Work", "Other"
+        "Website", "Banking", "Shopping", "Gaming", "Work",
+        "Social", "Finance", "Entertainment", "Other"
     )
 
     if (previewBitmap != null) {
@@ -1324,7 +1344,7 @@ private fun AccountEditorDialog(
                                     scope.launch {
                                         try {
                                             val bytes = withContext(Dispatchers.IO) {
-                                                AccountVaultStore.readScreenshot(context, account.id, attachment.id)
+                                                AccountVaultStore.readScreenshot(context, existingAccountId ?: return@launch, attachment.id)
                                             }
                                             try {
                                                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -1357,7 +1377,7 @@ private fun AccountEditorDialog(
                                     scope.launch {
                                         try {
                                             withContext(Dispatchers.IO) {
-                                                AccountVaultStore.removeScreenshot(context, account.id, attachment.id)
+                                                AccountVaultStore.removeScreenshot(context, existingAccountId ?: return@launch, attachment.id)
                                             }
                                             attachments.remove(attachment)
                                             error = null
@@ -1550,7 +1570,7 @@ private fun SettingsScreen(
         )
         SettingsItem("About Veylora", "Version 1.0.0 · Your Digital Life, Secured.", "ⓘ")
         Spacer(Modifier.height(20.dp))
-        Text("PIN and biometric unlock are convenience methods only. If you forget the master password, use a previously created encrypted backup; it cannot be reset without the current password.",
+        Text("PIN and biometric unlock are convenience methods only. If you forget the master password, the existing vault cannot be unlocked or reset. Keep your master password safe and create encrypted backups regularly.",
             color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
     }
     if (showMasterPasswordDialog) {
