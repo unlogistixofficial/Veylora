@@ -10,6 +10,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -33,6 +35,7 @@ import com.unlogistix.veylora.security.VaultCrypto
 import com.unlogistix.veylora.security.VaultSession
 import javax.crypto.Cipher
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,6 +73,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -824,6 +829,8 @@ private fun AccountEditorDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
+    var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var previewName by remember { mutableStateOf("") }
     val screenshotPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -848,6 +855,31 @@ private fun AccountEditorDialog(
         }
     }
     val categories = listOf("Social", "Email", "Finance", "Gaming", "Work", "Shopping", "Entertainment", "Other")
+
+    if (previewBitmap != null) {
+        AlertDialog(
+            onDismissRequest = {
+                previewBitmap?.recycle()
+                previewBitmap = null
+            },
+            containerColor = VeyloraSurface,
+            title = { Text(previewName, color = VeyloraText) },
+            text = {
+                Image(
+                    bitmap = previewBitmap!!.asImageBitmap(),
+                    contentDescription = previewName,
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
+                    contentScale = ContentScale.Fit
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    previewBitmap?.recycle()
+                    previewBitmap = null
+                }) { Text("Close", color = VeyloraGold) }
+            }
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -954,19 +986,54 @@ private fun AccountEditorDialog(
                                     color = VeyloraMuted, fontSize = 10.sp
                                 )
                             }
-                            TextButton(onClick = {
-                                scope.launch {
-                                    try {
-                                        withContext(Dispatchers.IO) {
-                                            AccountVaultStore.removeScreenshot(context, account.id, attachment.id)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        try {
+                                            val bytes = withContext(Dispatchers.IO) {
+                                                AccountVaultStore.readScreenshot(context, account.id, attachment.id)
+                                            }
+                                            try {
+                                                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                                                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                                                    throw IllegalStateException("Screenshot image is invalid.")
+                                                }
+                                                var sampleSize = 1
+                                                while (bounds.outWidth / sampleSize > 1600 ||
+                                                    bounds.outHeight / sampleSize > 1600) {
+                                                    sampleSize *= 2
+                                                }
+                                                val bitmap = BitmapFactory.decodeByteArray(
+                                                    bytes, 0, bytes.size,
+                                                    BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                                                ) ?: throw IllegalStateException("Could not preview this screenshot.")
+                                                previewBitmap?.recycle()
+                                                previewBitmap = bitmap
+                                                previewName = attachment.displayName
+                                                error = null
+                                            } finally {
+                                                bytes.fill(0)
+                                            }
+                                        } catch (failure: Exception) {
+                                            error = failure.message ?: "Could not open this encrypted screenshot."
                                         }
-                                        attachments.remove(attachment)
-                                        error = null
-                                    } catch (failure: Exception) {
-                                        error = failure.message ?: "Could not remove this screenshot."
                                     }
-                                }
-                            }) { Text("Remove", color = Color(0xFFFF8A80)) }
+                                }) { Text("View", color = VeyloraGold) }
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        try {
+                                            withContext(Dispatchers.IO) {
+                                                AccountVaultStore.removeScreenshot(context, account.id, attachment.id)
+                                            }
+                                            attachments.remove(attachment)
+                                            error = null
+                                        } catch (failure: Exception) {
+                                            error = failure.message ?: "Could not remove this screenshot."
+                                        }
+                                    }
+                                }) { Text("Remove", color = Color(0xFFFF8A80)) }
+                            }
                         }
                     }
                     TextButton(
