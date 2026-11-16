@@ -37,6 +37,8 @@ import com.unlogistix.veylora.security.VaultCrypto
 import com.unlogistix.veylora.security.VaultSession
 import javax.crypto.Cipher
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -601,12 +603,12 @@ private fun VaultGateScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Box(
-            modifier = Modifier.size(62.dp).background(VeyloraSurface, CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            Text("V", color = VeyloraGold, fontSize = 34.sp, fontWeight = FontWeight.Light)
-        }
+        Image(
+            painter = painterResource(id = R.drawable.ic_veylora),
+            contentDescription = "Veylora logo",
+            modifier = Modifier.size(62.dp).clip(RoundedCornerShape(18.dp)),
+            contentScale = ContentScale.Crop
+        )
         Spacer(Modifier.height(18.dp))
         Text("VEY LORA".replace(" ", ""), color = VeyloraText, fontSize = 25.sp,
             letterSpacing = 4.sp, fontWeight = FontWeight.Medium)
@@ -830,12 +832,12 @@ private fun HomeScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier.size(42.dp).background(VeyloraSurface, RoundedCornerShape(13.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("V", color = VeyloraGold, fontSize = 24.sp, fontWeight = FontWeight.Light)
-            }
+            Image(
+                painter = painterResource(id = R.drawable.ic_veylora),
+                contentDescription = "Veylora logo",
+                modifier = Modifier.size(42.dp).clip(RoundedCornerShape(13.dp)),
+                contentScale = ContentScale.Crop
+            )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text("Veylora", color = VeyloraText, fontSize = 21.sp,
