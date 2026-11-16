@@ -1432,7 +1432,7 @@ private fun generateSecurePassword(
         chars[index] = chars[swap]
         chars[swap] = temp
     }
-    return String(chars).also { chars.fill('\\u0000') }
+    return String(chars).also { chars.fill('\u0000') }
 }
 
 @Composable
