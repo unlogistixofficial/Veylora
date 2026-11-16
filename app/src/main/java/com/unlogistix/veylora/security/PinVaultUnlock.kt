@@ -59,7 +59,12 @@ object PinVaultUnlock {
             pin.fill('\u0000')
             throw error
         }
-        val vaultKey = VaultSession.keyCopy()
+        val vaultKey = try {
+            VaultSession.keyCopy()
+        } catch (error: Exception) {
+            pin.fill('\u0000')
+            throw error
+        }
         var wrappingKey: ByteArray? = null
         try {
             deleteHmacKey()
