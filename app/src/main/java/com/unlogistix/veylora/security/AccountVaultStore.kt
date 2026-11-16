@@ -373,6 +373,7 @@ object AccountVaultStore {
         val accounts = load(context)
         val accountArray = JSONArray()
         val screenshotArray = JSONArray()
+
         accounts.forEach { account ->
             accountArray.put(
                 JSONObject()
@@ -400,20 +401,38 @@ object AccountVaultStore {
                     .put("createdAt", account.createdAt)
                     .put("updatedAt", account.updatedAt)
             )
+        }
+
+        val accountBytes = accountArray.toString().toByteArray(StandardCharsets.UTF_8)
+        var estimatedSnapshotBytes = accountBytes.size.toLong() + 256L
+        accountBytes.fill(0)
+        if (estimatedSnapshotBytes > 100L * 1024 * 1024) {
+            throw GeneralSecurityException("Backup exceeds the supported 100 MB size.")
+        }
+
+        accounts.forEach { account ->
             account.attachments.forEach { attachment ->
                 val imageBytes = readScreenshot(context, account.id, attachment.id)
                 try {
+                    val encoded = Base64.getEncoder().encodeToString(imageBytes)
+                    // Include a conservative allowance for JSON keys, quotes, commas and IDs.
+                    estimatedSnapshotBytes += encoded.length.toLong() +
+                        account.id.length + attachment.id.length + 256L
+                    if (estimatedSnapshotBytes > 100L * 1024 * 1024) {
+                        throw GeneralSecurityException("Backup exceeds the supported 100 MB size.")
+                    }
                     screenshotArray.put(
                         JSONObject()
                             .put("accountId", account.id)
                             .put("attachmentId", attachment.id)
-                            .put("data", Base64.getEncoder().encodeToString(imageBytes))
+                            .put("data", encoded)
                     )
                 } finally {
                     imageBytes.fill(0)
                 }
             }
         }
+
         val snapshot = JSONObject()
             .put("format", "VEYloraBackup")
             .put("version", 1)
