@@ -140,6 +140,47 @@ object VaultCrypto {
         }
     }
 
+    @Synchronized
+    @Throws(GeneralSecurityException::class)
+    fun changeMasterPassword(context: Context, currentPassword: CharArray, newPassword: CharArray) {
+        var vaultKey: ByteArray? = null
+        var salt: ByteArray? = null
+        var nonce: ByteArray? = null
+        var wrappingKey: ByteArray? = null
+        var wrappedKey: ByteArray? = null
+        try {
+            require(newPassword.size >= 10) { "New master password must contain at least 10 characters." }
+            // Verify the current password before changing any persisted metadata.
+            unlock(context, currentPassword)
+            vaultKey = VaultSession.keyCopy()
+            salt = ByteArray(SALT_BYTES).also(random::nextBytes)
+            nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
+            wrappingKey = deriveKey(newPassword, salt, KDF_ITERATIONS)
+
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(wrappingKey, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+            cipher.updateAAD(associatedData(KDF_ITERATIONS))
+            wrappedKey = cipher.doFinal(vaultKey)
+
+            val saved = preferences(context).edit()
+                .putInt(KEY_VERSION, FORMAT_VERSION)
+                .putInt(KEY_ITERATIONS, KDF_ITERATIONS)
+                .putString(KEY_SALT, Base64.encodeToString(salt, Base64.NO_WRAP))
+                .putString(KEY_NONCE, Base64.encodeToString(nonce, Base64.NO_WRAP))
+                .putString(KEY_WRAPPED, Base64.encodeToString(wrappedKey, Base64.NO_WRAP))
+                .commit()
+            if (!saved) throw GeneralSecurityException("Could not save the new master password.")
+        } finally {
+            currentPassword.fill('\\u0000')
+            newPassword.fill('\\u0000')
+            vaultKey?.fill(0)
+            salt?.fill(0)
+            nonce?.fill(0)
+            wrappingKey?.fill(0)
+            wrappedKey?.fill(0)
+        }
+    }
+
     private fun deriveKey(password: CharArray, salt: ByteArray, iterations: Int): ByteArray {
         val spec = PBEKeySpec(password, salt, iterations, KEY_BITS)
         return try {
