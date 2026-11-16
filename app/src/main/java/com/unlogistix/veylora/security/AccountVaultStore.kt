@@ -26,6 +26,12 @@ import javax.crypto.spec.SecretKeySpec
  * The file lives under noBackupFilesDir so Android backup/restore cannot
  * silently move encrypted data without its associated device-local setup.
  */
+data class AccountCustomField(
+    val id: String = UUID.randomUUID().toString(),
+    val label: String,
+    val value: String
+)
+
 data class VaultAccount(
     val id: String = UUID.randomUUID().toString(),
     val title: String,
@@ -34,6 +40,7 @@ data class VaultAccount(
     val website: String = "",
     val notes: String = "",
     val category: String = "Other",
+    val customFields: List<AccountCustomField> = emptyList(),
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = createdAt
 )
@@ -125,6 +132,11 @@ object AccountVaultStore {
                     .put("website", account.website)
                     .put("notes", account.notes)
                     .put("category", account.category)
+                    .put("customFields", JSONArray().apply {
+                        account.customFields.forEach { field ->
+                            put(JSONObject().put("id", field.id).put("label", field.label).put("value", field.value))
+                        }
+                    })
                     .put("createdAt", account.createdAt)
                     .put("updatedAt", account.updatedAt)
             )
@@ -216,6 +228,7 @@ object AccountVaultStore {
                     website = item.optString("website", ""),
                     notes = item.optString("notes", ""),
                     category = item.optString("category", "Other"),
+                    customFields = decodeCustomFields(item.optJSONArray("customFields")),
                     createdAt = item.optLong("createdAt", 0L),
                     updatedAt = item.optLong("updatedAt", 0L)
                 )
@@ -231,6 +244,33 @@ object AccountVaultStore {
         }
     }
 
+    private fun decodeCustomFields(array: JSONArray?): List<AccountCustomField> {
+        if (array == null) return emptyList()
+        if (array.length() > 30) throw GeneralSecurityException("Too many custom fields in an account.")
+        val fields = ArrayList<AccountCustomField>(array.length())
+        val ids = HashSet<String>(array.length())
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index)
+                ?: throw GeneralSecurityException("A custom field is invalid.")
+            val field = try {
+                AccountCustomField(
+                    id = item.getString("id"),
+                    label = item.getString("label"),
+                    value = item.getString("value")
+                )
+            } catch (error: Exception) {
+                throw GeneralSecurityException("A custom field is corrupted.", error)
+            }
+            if (field.id.isBlank() || field.id.length > 64 || !ids.add(field.id) ||
+                field.label.isBlank() || field.label.length > 100 || field.value.length > MAX_FIELD_LENGTH
+            ) {
+                throw GeneralSecurityException("A custom field contains invalid data.")
+            }
+            fields.add(field)
+        }
+        return fields
+    }
+
     private fun validate(account: VaultAccount) {
         require(account.id.isNotBlank() && account.id.length <= 64) { "Invalid account ID." }
         require(account.title.isNotBlank() && account.title.length <= 200) { "Account title is required (maximum 200 characters)." }
@@ -239,6 +279,13 @@ object AccountVaultStore {
         require(account.website.length <= 2_048) { "Website address is too long." }
         require(account.notes.length <= MAX_FIELD_LENGTH) { "Notes are too long." }
         require(account.category.isNotBlank() && account.category.length <= 100) { "Invalid category." }
+        require(account.customFields.size <= 30) { "An account can have at most 30 custom fields." }
+        val fieldIds = HashSet<String>(account.customFields.size)
+        account.customFields.forEach { field ->
+            require(field.id.isNotBlank() && field.id.length <= 64 && fieldIds.add(field.id)) { "Invalid custom field ID." }
+            require(field.label.isNotBlank() && field.label.length <= 100) { "Custom field names must contain 1–100 characters." }
+            require(field.value.length <= MAX_FIELD_LENGTH) { "Custom field value is too long." }
+        }
         require(account.createdAt >= 0L && account.updatedAt >= 0L) { "Invalid account timestamp." }
     }
 
