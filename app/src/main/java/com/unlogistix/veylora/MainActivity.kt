@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import java.io.ByteArrayOutputStream
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -249,6 +250,104 @@ private fun VeyloraDashboard(activity: MainActivity?) {
     var storageError by remember { mutableStateOf<String?>(null) }
     var accountsLoaded by remember { mutableStateOf(false) }
     val accounts = remember { mutableStateListOf<VaultAccount>() }
+    var pendingExportPassword by remember { mutableStateOf<String?>(null) }
+    var pendingRestorePassword by remember { mutableStateOf<String?>(null) }
+    var pendingExportResult by remember { mutableStateOf<((Boolean, String?) -> Unit)?>(null) }
+    var pendingRestoreResult by remember { mutableStateOf<((Boolean, String?) -> Unit)?>(null) }
+
+    val exportBackupPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri: Uri? ->
+        activity?.finishExternalPicker()
+        val password = pendingExportPassword
+        val callback = pendingExportResult
+        pendingExportPassword = null
+        pendingExportResult = null
+        if (uri == null || password == null) {
+            callback?.invoke(false, "Backup export was cancelled.")
+        } else {
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val snapshot = AccountVaultStore.exportBackupSnapshot(context)
+                        var envelope: ByteArray? = null
+                        try {
+                            envelope = com.unlogistix.veylora.security.VaultBackupCrypto.encrypt(
+                                snapshot, password.toCharArray()
+                            )
+                            val output = context.contentResolver.openOutputStream(uri)
+                                ?: throw IllegalStateException("Could not create the selected backup file.")
+                            output.use { it.write(envelope) }
+                        } finally {
+                            snapshot.fill(0)
+                            envelope?.fill(0)
+                        }
+                    }
+                    callback?.invoke(true, "Encrypted backup created successfully.")
+                } catch (error: Exception) {
+                    callback?.invoke(false, error.message ?: "Could not create the encrypted backup.")
+                }
+            }
+        }
+    }
+
+    val restoreBackupPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        activity?.finishExternalPicker()
+        val password = pendingRestorePassword
+        val callback = pendingRestoreResult
+        pendingRestorePassword = null
+        pendingRestoreResult = null
+        if (uri == null || password == null) {
+            callback?.invoke(false, "Backup restore was cancelled.")
+        } else {
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val input = context.contentResolver.openInputStream(uri)
+                            ?: throw IllegalStateException("Could not open the selected backup file.")
+                        val envelope = input.use { stream ->
+                            val output = ByteArrayOutputStream()
+                            val buffer = ByteArray(8192)
+                            var total = 0
+                            try {
+                                while (true) {
+                                    val count = stream.read(buffer)
+                                    if (count < 0) break
+                                    total += count
+                                    if (total > 101 * 1024 * 1024) {
+                                        throw IllegalArgumentException("Backup file exceeds the 100 MB limit.")
+                                    }
+                                    output.write(buffer, 0, count)
+                                }
+                                output.toByteArray()
+                            } finally {
+                                buffer.fill(0)
+                                output.close()
+                            }
+                        }
+                        var snapshot: ByteArray? = null
+                        try {
+                            snapshot = com.unlogistix.veylora.security.VaultBackupCrypto.decrypt(
+                                envelope, password.toCharArray()
+                            )
+                            AccountVaultStore.restoreBackupSnapshot(context, snapshot)
+                        } finally {
+                            envelope.fill(0)
+                            snapshot?.fill(0)
+                        }
+                    }
+                    val restored = withContext(Dispatchers.IO) { AccountVaultStore.load(context) }
+                    accounts.clear()
+                    accounts.addAll(restored)
+                    callback?.invoke(true, "Vault restored successfully.")
+                } catch (error: Exception) {
+                    callback?.invoke(false, error.message ?: "Could not restore this backup.")
+                }
+            }
+        }
+    }
 
     LaunchedEffect(context) {
         try {
@@ -343,7 +442,19 @@ private fun VeyloraDashboard(activity: MainActivity?) {
                                 activity?.let { PinVaultUnlock.enable(it, value.toCharArray()); true } ?: false
                             } catch (_: Exception) { false }
                         },
-                        onDisablePin = { activity?.let { PinVaultUnlock.disable(it) } }
+                        onDisablePin = { activity?.let { PinVaultUnlock.disable(it) } },
+                        onExportBackup = { password, callback ->
+                            pendingExportPassword = password
+                            pendingExportResult = callback
+                            activity?.beginExternalPicker()
+                            exportBackupPicker.launch("Veylora-Backup.veybak")
+                        },
+                        onRestoreBackup = { password, callback ->
+                            pendingRestorePassword = password
+                            pendingRestoreResult = callback
+                            activity?.beginExternalPicker()
+                            restoreBackupPicker.launch(arrayOf("*/*"))
+                        }
                     )
                 }
             }
@@ -1213,9 +1324,14 @@ private fun SettingsScreen(
     onDisableBiometric: () -> Unit,
     pinEnabled: Boolean,
     onEnablePin: (String) -> Boolean,
-    onDisablePin: () -> Unit
+    onDisablePin: () -> Unit,
+    onExportBackup: (String, (Boolean, String?) -> Unit) -> Unit,
+    onRestoreBackup: (String, (Boolean, String?) -> Unit) -> Unit
 ) {
     var showPinDialog by remember { mutableStateOf(false) }
+    var backupAction by remember { mutableStateOf<String?>(null) }
+    var backupPassword by remember { mutableStateOf("") }
+    var backupMessage by remember { mutableStateOf<String?>(null) }
     var pinInput by remember { mutableStateOf("") }
     var pinConfirmation by remember { mutableStateOf("") }
     var pinMessage by remember { mutableStateOf<String?>(null) }
@@ -1277,7 +1393,23 @@ private fun SettingsScreen(
         SettingsItem("Appearance", "Luxury dark theme", "◐")
         SettingsItem("Password generator", "Create strong random passwords", "✧")
         TextButton(onClick = { showGenerator = true }) { Text("Open password generator", color = VeyloraGold) }
-        SettingsItem("Backup & restore", "Encrypted backup options", "↗")
+        SettingsItem("Backup & restore", "Password-protected encrypted vault backup", "↗")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                onClick = { backupAction = "export"; backupPassword = ""; backupMessage = null },
+                colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold, contentColor = VeyloraBlack)
+            ) { Text("Create backup") }
+            TextButton(
+                onClick = { backupAction = "restore"; backupPassword = ""; backupMessage = null }
+            ) { Text("Restore backup", color = VeyloraGold) }
+        }
+        if (backupMessage != null) {
+            Text(backupMessage!!, color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
+        }
+        Text(
+            "Backups include account records and screenshots. Keep the backup password safe; it cannot be recovered.",
+            color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp
+        )
         SettingsItem("About Veylora", "Version 1.0.0 · Your Digital Life, Secured.", "ⓘ")
         Spacer(Modifier.height(20.dp))
         Text("PIN and biometric unlock are convenience methods only. Your master password remains the recovery method.",
@@ -1285,6 +1417,64 @@ private fun SettingsScreen(
     }
     if (showGenerator) {
         PasswordGeneratorDialog(onDismiss = { showGenerator = false })
+    }
+
+    if (backupAction != null) {
+        val action = backupAction!!
+        AlertDialog(
+            onDismissRequest = { backupAction = null; backupPassword = "" },
+            containerColor = VeyloraSurface,
+            title = {
+                Text(if (action == "export") "Create encrypted backup" else "Restore encrypted backup", color = VeyloraText)
+            },
+            text = {
+                Column {
+                    Text(
+                        if (action == "export")
+                            "Choose a strong backup password with at least 12 characters. This password encrypts your portable backup."
+                        else
+                            "Restoring replaces the current vault on this device. Enter the password used when the backup was created.",
+                        color = VeyloraMuted, fontSize = 12.sp, lineHeight = 17.sp
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = backupPassword,
+                        onValueChange = { backupPassword = it.take(128) },
+                        singleLine = true,
+                        label = { Text("Backup password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (backupPassword.length < 12) {
+                        backupMessage = "Backup password must contain at least 12 characters."
+                    } else {
+                        val password = backupPassword
+                        backupPassword = ""
+                        backupAction = null
+                        if (action == "export") {
+                            onExportBackup(password) { success, message ->
+                                backupMessage = message ?: if (success) "Backup created." else "Backup export failed."
+                            }
+                        } else {
+                            onRestoreBackup(password) { success, message ->
+                                backupMessage = message ?: if (success) "Vault restored." else "Restore failed."
+                            }
+                        }
+                    }
+                }) {
+                    Text(if (action == "export") "Choose save location" else "Choose backup file", color = VeyloraGold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { backupAction = null; backupPassword = "" }) {
+                    Text("Cancel", color = VeyloraMuted)
+                }
+            }
+        )
     }
 
     if (showPinDialog) {
