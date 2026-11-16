@@ -1330,14 +1330,16 @@ private fun AccountEditorDialog(
                                 label = { Text("Field value") },
                                 visualTransformation = if (isSecretField && field.id !in revealedCustomFields)
                                     PasswordVisualTransformation() else VisualTransformation.None,
-                                trailingIcon = if (isSecretField) ({
-                                    TextButton(onClick = {
-                                        if (field.id in revealedCustomFields) revealedCustomFields.remove(field.id)
-                                        else revealedCustomFields.add(field.id)
-                                    }) {
-                                        Text(if (field.id in revealedCustomFields) "Hide" else "Show", color = VeyloraGold)
+                                trailingIcon = {
+                                    if (isSecretField) {
+                                        TextButton(onClick = {
+                                            if (field.id in revealedCustomFields) revealedCustomFields.remove(field.id)
+                                            else revealedCustomFields.add(field.id)
+                                        }) {
+                                            Text(if (field.id in revealedCustomFields) "Hide" else "Show", color = VeyloraGold)
+                                        }
                                     }
-                                }) else null,
+                                },
                                 modifier = Modifier.fillMaxWidth()
                             )
                             TextButton(onClick = { customFields.removeAt(index) }) {
