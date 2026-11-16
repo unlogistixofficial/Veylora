@@ -16,6 +16,7 @@ import java.io.ByteArrayOutputStream
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -254,6 +255,7 @@ private fun VeyloraDashboard(activity: MainActivity?) {
     var pendingRestorePassword by remember { mutableStateOf<String?>(null) }
     var pendingExportResult by remember { mutableStateOf<((Boolean, String?) -> Unit)?>(null) }
     var pendingRestoreResult by remember { mutableStateOf<((Boolean, String?) -> Unit)?>(null) }
+    var initialCategory by remember { mutableStateOf<String?>(null) }
 
     val exportBackupPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream")
@@ -416,7 +418,7 @@ private fun VeyloraDashboard(activity: MainActivity?) {
                     VeyloraTab.HOME -> HomeScreen(
                         accounts = accounts,
                         accountsLoaded = accountsLoaded,
-                        onAddClick = { editingAccount = null; showEditor = true },
+                        onAddClick = { folder -> initialCategory = folder; editingAccount = null; showEditor = true },
                         onEdit = { editingAccount = it; showEditor = true },
                         onToggleFavorite = { account -> toggleFavorite(account) },
                         onDelete = { account -> pendingDelete = account }
@@ -454,6 +456,21 @@ private fun VeyloraDashboard(activity: MainActivity?) {
                             pendingRestoreResult = callback
                             activity?.beginExternalPicker()
                             restoreBackupPicker.launch(arrayOf("*/*"))
+                        },
+                        onChangeMasterPassword = { current, next, callback ->
+                            scope.launch {
+                                val message = withContext(Dispatchers.Default) {
+                                    try {
+                                        VaultCrypto.changeMasterPassword(context, current.toCharArray(), next.toCharArray())
+                                        null
+                                    } catch (_: InvalidMasterPasswordException) {
+                                        "The current master password is incorrect."
+                                    } catch (failure: Exception) {
+                                        failure.message ?: "Could not change the master password."
+                                    }
+                                }
+                                callback(message == null, message)
+                            }
                         }
                     )
                 }
@@ -516,12 +533,28 @@ private fun VeyloraDashboard(activity: MainActivity?) {
     if (showEditor) {
         AccountEditorDialog(
             account = editingAccount,
-            onDismiss = { showEditor = false; editingAccount = null },
-            onSave = { account ->
+            initialCategory = initialCategory,
+            onDismiss = { showEditor = false; editingAccount = null; initialCategory = null },
+            onSave = { account, pendingScreenshots ->
                 scope.launch {
                     try {
                         val stored = withContext(Dispatchers.IO) {
                             AccountVaultStore.upsert(context, account)
+                            val newlyAttached = mutableListOf<VaultAttachment>()
+                            try {
+                                pendingScreenshots.forEach { uri ->
+                                    newlyAttached += AccountVaultStore.addScreenshot(
+                                        context, account.id, uri, uri.lastPathSegment ?: "Screenshot"
+                                    )
+                                }
+                            } catch (failure: Exception) {
+                                newlyAttached.forEach { attachment ->
+                                    try {
+                                        AccountVaultStore.removeScreenshot(context, account.id, attachment.id)
+                                    } catch (_: Exception) { }
+                                }
+                                throw failure
+                            }
                             AccountVaultStore.load(context)
                         }
                         accounts.clear()
@@ -529,10 +562,11 @@ private fun VeyloraDashboard(activity: MainActivity?) {
                         storageError = null
                         showEditor = false
                         editingAccount = null
+                        initialCategory = null
                     } catch (error: IllegalArgumentException) {
                         storageError = error.message ?: "Please check the account details."
-                    } catch (_: Exception) {
-                        storageError = "Could not save the account securely. Your existing vault data was preserved."
+                    } catch (failure: Exception) {
+                        storageError = failure.message ?: "Could not save the account securely. Your existing vault data was preserved."
                     }
                 }
             }
@@ -552,6 +586,8 @@ private fun VaultGateScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var password by remember { mutableStateOf("") }
+    var showMasterPassword by remember { mutableStateOf(false) }
+    var showConfirmationPassword by remember { mutableStateOf(false) }
     var pin by remember { mutableStateOf("") }
     var pinEnabled by remember { mutableStateOf(pinAvailable) }
     var confirmation by remember { mutableStateOf("") }
@@ -600,8 +636,13 @@ private fun VaultGateScreen(
             singleLine = true,
             label = { Text("Master password") },
             placeholder = { Text("Enter master password") },
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = if (showMasterPassword) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            trailingIcon = {
+                TextButton(onClick = { showMasterPassword = !showMasterPassword }) {
+                    Text(if (showMasterPassword) "Hide" else "Show", color = VeyloraGold)
+                }
+            },
             shape = RoundedCornerShape(14.dp)
         )
         if (initialized && pinEnabled) {
@@ -656,8 +697,13 @@ private fun VaultGateScreen(
                 singleLine = true,
                 label = { Text("Confirm master password") },
                 placeholder = { Text("Re-enter master password") },
-                visualTransformation = PasswordVisualTransformation(),
+                visualTransformation = if (showConfirmationPassword) VisualTransformation.None else PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    TextButton(onClick = { showConfirmationPassword = !showConfirmationPassword }) {
+                        Text(if (showConfirmationPassword) "Hide" else "Show", color = VeyloraGold)
+                    }
+                },
                 shape = RoundedCornerShape(14.dp)
             )
             Spacer(Modifier.height(10.dp))
@@ -738,14 +784,31 @@ private fun VaultGateScreen(
 private fun HomeScreen(
     accounts: List<VaultAccount>,
     accountsLoaded: Boolean,
-    onAddClick: () -> Unit,
+    onAddClick: (String?) -> Unit,
     onEdit: (VaultAccount) -> Unit,
     onToggleFavorite: (VaultAccount) -> Unit,
     onDelete: (VaultAccount) -> Unit
 ) {
+    val folders = (
+        listOf("Facebook", "Instagram", "TikTok", "Telegram", "Email",
+            "Website", "Banking", "Shopping", "Gaming", "Work",
+            "Social", "Finance", "Entertainment", "Other") +
+            accounts.map { it.category.trim() }.filter { it.isNotBlank() }
+        ).distinct()
+    val symbols = mapOf(
+        "Facebook" to "f", "Instagram" to "◎", "TikTok" to "♪", "Telegram" to "➤",
+        "Email" to "✉", "Website" to "⌘", "Banking" to "▤", "Shopping" to "◇",
+        "Gaming" to "✧", "Work" to "▣", "Social" to "◎",
+        "Finance" to "▤", "Entertainment" to "▶", "Other" to "＋"
+    )
+    var selectedFolder by remember { mutableStateOf<String?>(null) }
+    val folderAccounts = selectedFolder?.let { folder ->
+        accounts.filter { it.category.equals(folder, ignoreCase = true) }
+    }.orEmpty()
+
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-            .padding(horizontal = 22.dp, vertical = 20.dp)
+            .padding(horizontal = 20.dp, vertical = 18.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -753,113 +816,149 @@ private fun HomeScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text("VEYLORA", color = VeyloraText, fontSize = 19.sp,
+                Text("VEY LORA".replace(" ", ""), color = VeyloraText, fontSize = 20.sp,
                     letterSpacing = 3.sp, fontWeight = FontWeight.SemiBold)
                 Text("YOUR PRIVATE SPACE", color = VeyloraMuted, fontSize = 9.sp,
                     letterSpacing = 2.sp)
             }
-            Box(Modifier.size(42.dp).background(VeyloraSurface, CircleShape),
+            Box(Modifier.size(44.dp).background(VeyloraSurface, CircleShape),
                 contentAlignment = Alignment.Center) {
-                Text("V", color = VeyloraGold, fontSize = 22.sp, fontWeight = FontWeight.Light)
+                Text("V", color = VeyloraGold, fontSize = 25.sp, fontWeight = FontWeight.Light)
             }
         }
-
-        Spacer(Modifier.height(30.dp))
-        Text("Good to see you.", color = VeyloraMuted, fontSize = 14.sp)
-        Text("Your digital life,\nbeautifully secured.", color = VeyloraText,
-            fontSize = 27.sp, lineHeight = 34.sp, fontWeight = FontWeight.Medium)
-
         Spacer(Modifier.height(24.dp))
+        Text("Your digital life.", color = VeyloraText, fontSize = 27.sp,
+            lineHeight = 34.sp, fontWeight = FontWeight.Medium)
+        Text("Everything you value, organized in one secure place.",
+            color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp)
+        Spacer(Modifier.height(20.dp))
         Card(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF201D17))
         ) {
-            Column(Modifier.padding(20.dp)) {
-                Text("VAULT STATUS", color = VeyloraGold, fontSize = 11.sp,
+            Column(Modifier.padding(18.dp)) {
+                Text("PRIVATE VAULT", color = VeyloraGold, fontSize = 10.sp,
                     letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(9.dp))
+                Text(if (accountsLoaded) "${accounts.size} saved items" else "Loading your vault…",
+                    color = VeyloraText, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                Text("Your logins, notes and screenshots stay encrypted on this device.",
+                    color = VeyloraMuted, fontSize = 12.sp, lineHeight = 18.sp)
                 Spacer(Modifier.height(14.dp))
-                Text("Encrypted account vault", color = VeyloraText, fontSize = 21.sp,
-                    fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(6.dp))
-                Text("Account details are encrypted on this device with your vault key.",
-                    color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp)
-                Spacer(Modifier.height(18.dp))
                 Button(
-                    onClick = onAddClick,
+                    onClick = { onAddClick(selectedFolder) },
                     colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold,
                         contentColor = VeyloraBlack),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("＋   Add account", fontWeight = FontWeight.SemiBold)
-                }
+                ) { Text("＋   Add new item", fontWeight = FontWeight.SemiBold) }
             }
         }
-
-        Spacer(Modifier.height(22.dp))
-        Text("OVERVIEW", color = VeyloraMuted, fontSize = 11.sp,
-            letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OverviewCard(if (accountsLoaded) accounts.size.toString() else "—", "ACCOUNTS", Modifier.weight(1f))
-            OverviewCard(
-                if (accountsLoaded) accounts.count { it.isFavorite }.toString() else "—",
-                "FAVORITES",
-                Modifier.weight(1f)
-            )
-        }
-
-        Spacer(Modifier.height(26.dp))
-        Text("YOUR ACCOUNTS", color = VeyloraMuted, fontSize = 11.sp,
-            letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(10.dp))
-        if (!accountsLoaded) {
-            Text("Unlocking encrypted records…", color = VeyloraMuted, fontSize = 13.sp)
-        } else if (accounts.isEmpty()) {
-            Text("Your vault is empty. Add your first account to get started.",
-                color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp)
-        } else {
-            accounts.forEach { account ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
-                    shape = RoundedCornerShape(15.dp),
-                    colors = CardDefaults.cardColors(containerColor = VeyloraSurface)
-                ) {
-                    Column(Modifier.padding(14.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+        Spacer(Modifier.height(24.dp))
+        if (selectedFolder == null) {
+            Text("YOUR FOLDERS", color = VeyloraMuted, fontSize = 10.sp,
+                letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(12.dp))
+            folders.chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    pair.forEach { folder ->
+                        val count = accounts.count { it.category.equals(folder, ignoreCase = true) }
+                        Card(
+                            modifier = Modifier.weight(1f).padding(bottom = 10.dp),
+                            onClick = { selectedFolder = folder },
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = VeyloraSurface)
                         ) {
-                            Text(account.title, color = VeyloraText, fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                            TextButton(onClick = { onToggleFavorite(account) }) {
-                                Text(if (account.isFavorite) "★" else "☆",
-                                    color = VeyloraGold, fontSize = 20.sp)
+                            Column(Modifier.fillMaxWidth().padding(15.dp)) {
+                                Box(
+                                    Modifier.size(38.dp).background(Color(0xFF28241D), RoundedCornerShape(12.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(symbols[folder] ?: "◇", color = VeyloraGold, fontSize = 19.sp)
+                                }
+                                Spacer(Modifier.height(12.dp))
+                                Text(folder, color = VeyloraText, fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold)
+                                Text(if (accountsLoaded) "$count items" else "—",
+                                    color = VeyloraMuted, fontSize = 11.sp)
                             }
                         }
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            account.username.ifBlank { account.website.ifBlank { account.category } },
-                            color = VeyloraMuted, fontSize = 12.sp
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = { onEdit(account) }) {
-                                Text("Edit", color = VeyloraGold)
+                    }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("Choose a folder to view its saved accounts. You can add your own details and custom fields to every item.",
+                color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { selectedFolder = null }) {
+                    Text("‹ All folders", color = VeyloraGold)
+                }
+                Spacer(Modifier.weight(1f))
+                Text(selectedFolder!!.uppercase(), color = VeyloraMuted,
+                    fontSize = 10.sp, letterSpacing = 1.4.sp)
+            }
+            Text(selectedFolder!!, color = VeyloraText, fontSize = 25.sp,
+                fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(12.dp))
+            if (!accountsLoaded) {
+                Text("Loading encrypted records…", color = VeyloraMuted, fontSize = 13.sp)
+            } else if (folderAccounts.isEmpty()) {
+                Text("No items in this folder yet. Add your first one here.",
+                    color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp)
+            } else {
+                folderAccounts.forEach { account ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                        shape = RoundedCornerShape(15.dp),
+                        colors = CardDefaults.cardColors(containerColor = VeyloraSurface)
+                    ) {
+                        Column(Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(account.title, color = VeyloraText, fontSize = 15.sp,
+                                    fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                                TextButton(onClick = { onToggleFavorite(account) }) {
+                                    Text(if (account.isFavorite) "★" else "☆",
+                                        color = VeyloraGold, fontSize = 20.sp)
+                                }
                             }
-                            TextButton(onClick = { onDelete(account) }) {
-                                Text("Delete", color = Color(0xFFFF8A80))
+                            Text(account.username.ifBlank { account.website.ifBlank { account.category } },
+                                color = VeyloraMuted, fontSize = 12.sp)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { onEdit(account) }) {
+                                    Text("Open / Edit", color = VeyloraGold)
+                                }
+                                TextButton(onClick = { onDelete(account) }) {
+                                    Text("Delete", color = Color(0xFFFF8A80))
+                                }
                             }
                         }
                     }
                 }
             }
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { onAddClick(selectedFolder) },
+                colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold,
+                    contentColor = VeyloraBlack),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("＋   Add to ${selectedFolder!!}") }
         }
-        Spacer(Modifier.height(20.dp))
-        Text("Account records are encrypted before they are written to app-private storage.",
-            color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
+        Spacer(Modifier.height(16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OverviewCard(if (accountsLoaded) accounts.size.toString() else "—", "TOTAL ITEMS", Modifier.weight(1f))
+            OverviewCard(if (accountsLoaded) accounts.count { it.isFavorite }.toString() else "—",
+                "FAVORITES", Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("All information is encrypted before it is stored on this device.",
+            color = VeyloraMuted, fontSize = 10.sp, lineHeight = 15.sp)
     }
 }
 
@@ -1039,22 +1138,43 @@ private fun generateSecurePassword(length: Int): String {
 @Composable
 private fun AccountEditorDialog(
     account: VaultAccount?,
+    initialCategory: String?,
     onDismiss: () -> Unit,
-    onSave: (VaultAccount) -> Unit
+    onSave: (VaultAccount, List<Uri>) -> Unit
 ) {
     var title by remember(account?.id) { mutableStateOf(account?.title.orEmpty()) }
     var username by remember(account?.id) { mutableStateOf(account?.username.orEmpty()) }
     var password by remember(account?.id) { mutableStateOf(account?.password.orEmpty()) }
+    var showAccountPassword by remember(account?.id) { mutableStateOf(false) }
     var website by remember(account?.id) { mutableStateOf(account?.website.orEmpty()) }
     var notes by remember(account?.id) { mutableStateOf(account?.notes.orEmpty()) }
-    var category by remember(account?.id) { mutableStateOf(account?.category ?: "Other") }
+    val draftAccountId = remember(account?.id) { account?.id ?: java.util.UUID.randomUUID().toString() }
+    var category by remember(account?.id, initialCategory) { mutableStateOf(account?.category ?: initialCategory ?: "Other") }
     var categoryExpanded by remember { mutableStateOf(false) }
-    val customFields = remember(account?.id) {
-        mutableStateListOf<AccountCustomField>().apply { addAll(account?.customFields.orEmpty()) }
+    val revealedCustomFields = remember(account?.id) { mutableStateListOf<String>() }
+    val customFields = remember(account?.id, initialCategory) {
+        mutableStateListOf<AccountCustomField>().apply {
+            addAll(account?.customFields.orEmpty())
+            if (account == null) {
+                val presets = when (initialCategory) {
+                    "Facebook", "Instagram", "TikTok" -> listOf("Email address", "Phone number")
+                    "Telegram" -> listOf("Phone number", "Recovery email")
+                    "Email" -> listOf("First name", "Last name", "Recovery email", "Recovery email password", "Phone number")
+                    "Website" -> listOf("Login URL", "Recovery email", "Security question")
+                    "Banking" -> listOf("Account holder", "Account number", "Branch", "Customer ID")
+                    "Shopping" -> listOf("Registered email", "Phone number", "Customer ID")
+                    "Gaming" -> listOf("Player ID", "Server", "Recovery email")
+                    "Work" -> listOf("Organization", "Employee ID", "Recovery email")
+                    else -> emptyList()
+                }
+                presets.forEach { add(AccountCustomField(label = it, value = "")) }
+            }
+        }
     }
     val attachments = remember(account?.id) {
         mutableStateListOf<VaultAttachment>().apply { addAll(account?.attachments.orEmpty()) }
     }
+    val pendingScreenshotUris = remember(account?.id) { mutableStateListOf<Uri>() }
     val context = LocalContext.current
     val activity = context as? MainActivity
     val scope = rememberCoroutineScope()
@@ -1065,27 +1185,20 @@ private fun AccountEditorDialog(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         activity?.finishExternalPicker()
-        val existingAccount = account
-        if (uri != null && existingAccount != null) {
-            scope.launch {
-                try {
-                    val saved = withContext(Dispatchers.IO) {
-                        AccountVaultStore.addScreenshot(
-                            context,
-                            existingAccount.id,
-                            uri,
-                            uri.lastPathSegment ?: "Screenshot"
-                        )
-                    }
-                    attachments.add(saved)
-                    error = null
-                } catch (failure: Exception) {
-                    error = failure.message ?: "Could not securely attach this screenshot."
-                }
+        if (uri != null) {
+            if (attachments.size + pendingScreenshotUris.size >= 20) {
+                error = "An account can have at most 20 screenshots."
+            } else {
+                pendingScreenshotUris.add(uri)
+                error = null
             }
         }
     }
-    val categories = listOf("Social", "Email", "Finance", "Gaming", "Work", "Shopping", "Entertainment", "Other")
+    val categories = listOf(
+        "Facebook", "Instagram", "TikTok", "Telegram", "Email",
+        "Website", "Banking", "Shopping", "Gaming", "Work",
+        "Social", "Finance", "Entertainment", "Other"
+    )
 
     if (previewBitmap != null) {
         AlertDialog(
@@ -1123,11 +1236,22 @@ private fun AccountEditorDialog(
             ) {
                 OutlinedTextField(title, { title = it; error = null }, label = { Text("Account name *") },
                     singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(username, { username = it }, label = { Text("Username / Email") },
-                    singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(password, { password = it }, label = { Text("Password") },
-                    singleLine = true, visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(username, { username = it }, label = {
+                    Text(if (category == "Email") "Email address" else "Username / ID name")
+                }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = if (showAccountPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        TextButton(onClick = { showAccountPassword = !showAccountPassword }) {
+                            Text(if (showAccountPassword) "Hide" else "Show", color = VeyloraGold)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
                 TextButton(onClick = {
                     password = generateSecurePassword(20)
                 }) { Text("Generate secure password", color = VeyloraGold) }
@@ -1137,9 +1261,8 @@ private fun AccountEditorDialog(
                 Box(Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = category,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Category") },
+                        onValueChange = { category = it },
+                        label = { Text("Category / folder name") },
                         modifier = Modifier.fillMaxWidth(),
                         trailingIcon = { TextButton(onClick = { categoryExpanded = true }) { Text("Choose", color = VeyloraGold) } }
                     )
@@ -1150,7 +1273,28 @@ private fun AccountEditorDialog(
                         categories.forEach { option ->
                             DropdownMenuItem(
                                 text = { Text(option) },
-                                onClick = { category = option; categoryExpanded = false }
+                                onClick = {
+                                category = option
+                                categoryExpanded = false
+                                val presets = when (option) {
+                                    "Facebook" -> listOf("Email address", "Phone number")
+                                    "Instagram" -> listOf("Email address", "Phone number")
+                                    "TikTok" -> listOf("Email address", "Phone number")
+                                    "Telegram" -> listOf("Phone number", "Recovery email")
+                                    "Email" -> listOf("First name", "Last name", "Recovery email", "Recovery email password", "Phone number")
+                                    "Website" -> listOf("Login URL", "Recovery email", "Security question")
+                                    "Banking" -> listOf("Account holder", "Account number", "Branch", "Customer ID")
+                                    "Shopping" -> listOf("Registered email", "Phone number", "Customer ID")
+                                    "Gaming" -> listOf("Player ID", "Server", "Recovery email")
+                                    "Work" -> listOf("Organization", "Employee ID", "Recovery email")
+                                    else -> emptyList()
+                                }
+                                presets.forEach { label ->
+                                    if (customFields.none { it.label.equals(label, ignoreCase = true) } && customFields.size < 30) {
+                                        customFields.add(AccountCustomField(label = label, value = ""))
+                                    }
+                                }
+                            }
                             )
                         }
                     }
@@ -1177,12 +1321,25 @@ private fun AccountEditorDialog(
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
+                            val isSecretField = field.label.contains("password", ignoreCase = true)
                             OutlinedTextField(
                                 value = field.value,
                                 onValueChange = { value ->
                                     customFields[index] = field.copy(value = value)
                                 },
                                 label = { Text("Field value") },
+                                visualTransformation = if (isSecretField && field.id !in revealedCustomFields)
+                                    PasswordVisualTransformation() else VisualTransformation.None,
+                                trailingIcon = {
+                                    if (isSecretField) {
+                                        TextButton(onClick = {
+                                            if (field.id in revealedCustomFields) revealedCustomFields.remove(field.id)
+                                            else revealedCustomFields.add(field.id)
+                                        }) {
+                                            Text(if (field.id in revealedCustomFields) "Hide" else "Show", color = VeyloraGold)
+                                        }
+                                    }
+                                },
                                 modifier = Modifier.fillMaxWidth()
                             )
                             TextButton(onClick = { customFields.removeAt(index) }) {
@@ -1203,9 +1360,7 @@ private fun AccountEditorDialog(
                 }
                 Text("SCREENSHOT ATTACHMENTS", color = VeyloraGold, fontSize = 10.sp,
                     letterSpacing = 1.5.sp, fontWeight = FontWeight.SemiBold)
-                if (account == null) {
-                    Text("Save this account first to attach screenshots.", color = VeyloraMuted, fontSize = 11.sp)
-                } else {
+                if (account != null) {
                     attachments.forEach { attachment ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1270,18 +1425,34 @@ private fun AccountEditorDialog(
                             }
                         }
                     }
-                    TextButton(
-                        onClick = {
-                            activity?.beginExternalPicker()
-                            screenshotPicker.launch("image/*")
-                        },
-                        enabled = attachments.size < 20
-                    ) {
-                        Text("＋ Add screenshot", color = VeyloraGold)
-                    }
-                    Text("JPEG, PNG or WebP • Maximum 8 MB each • Encrypted on this device",
-                        color = VeyloraMuted, fontSize = 10.sp, lineHeight = 14.sp)
                 }
+                pendingScreenshotUris.forEachIndexed { index, uri ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "Pending: ${uri.lastPathSegment?.substringAfterLast('/') ?: "Screenshot"}",
+                            color = VeyloraMuted, fontSize = 11.sp, modifier = Modifier.weight(1f),
+                            maxLines = 1
+                        )
+                        TextButton(onClick = { pendingScreenshotUris.removeAt(index) }) {
+                            Text("Remove", color = Color(0xFFFF8A80))
+                        }
+                    }
+                }
+                TextButton(
+                    onClick = {
+                        activity?.beginExternalPicker()
+                        screenshotPicker.launch("image/*")
+                    },
+                    enabled = attachments.size + pendingScreenshotUris.size < 20
+                ) {
+                    Text("＋ Add screenshot", color = VeyloraGold)
+                }
+                Text("JPEG, PNG or WebP • Maximum 8 MB each • Encrypted when saved",
+                    color = VeyloraMuted, fontSize = 10.sp, lineHeight = 14.sp)
                 if (error != null) Text(error!!, color = Color(0xFFFF8A80), fontSize = 11.sp)
             }
         },
@@ -1300,7 +1471,7 @@ private fun AccountEditorDialog(
                         error = "A custom field exceeds the allowed length."
                     else -> onSave(
                         VaultAccount(
-                            id = account?.id ?: java.util.UUID.randomUUID().toString(),
+                            id = draftAccountId,
                             title = title.trim(),
                             username = username,
                             password = password,
@@ -1312,7 +1483,8 @@ private fun AccountEditorDialog(
                             isFavorite = account?.isFavorite ?: false,
                             createdAt = account?.createdAt ?: System.currentTimeMillis(),
                             updatedAt = System.currentTimeMillis()
-                        )
+                        ),
+                        pendingScreenshotUris.toList()
                     )
                 }
             }) { Text("Save securely", color = VeyloraGold) }
@@ -1332,9 +1504,16 @@ private fun SettingsScreen(
     onEnablePin: (String) -> Boolean,
     onDisablePin: () -> Unit,
     onExportBackup: (String, (Boolean, String?) -> Unit) -> Unit,
-    onRestoreBackup: (String, (Boolean, String?) -> Unit) -> Unit
+    onRestoreBackup: (String, (Boolean, String?) -> Unit) -> Unit,
+    onChangeMasterPassword: (String, String, (Boolean, String?) -> Unit) -> Unit
 ) {
     var showPinDialog by remember { mutableStateOf(false) }
+    var showMasterPasswordDialog by remember { mutableStateOf(false) }
+    var currentMasterPassword by remember { mutableStateOf("") }
+    var newMasterPassword by remember { mutableStateOf("") }
+    var confirmMasterPassword by remember { mutableStateOf("") }
+    var masterPasswordMessage by remember { mutableStateOf<String?>(null) }
+    var masterPasswordBusy by remember { mutableStateOf(false) }
     var backupAction by remember { mutableStateOf<String?>(null) }
     var backupPassword by remember { mutableStateOf("") }
     var restoreAcknowledged by remember { mutableStateOf(false) }
@@ -1353,6 +1532,10 @@ private fun SettingsScreen(
         Text("Manage your Veylora experience.", color = VeyloraMuted, fontSize = 13.sp)
         Spacer(Modifier.height(24.dp))
         SettingsItem("Security", "Master password protection enabled", "◈")
+        TextButton(onClick = {
+            currentMasterPassword = ""; newMasterPassword = ""; confirmMasterPassword = ""
+            masterPasswordMessage = null; showMasterPasswordDialog = true
+        }) { Text("Change master password", color = VeyloraGold) }
         Spacer(Modifier.height(8.dp))
         Text(
             if (pinIsEnabled) "App PIN is enabled. Five incorrect attempts disable PIN unlock and require the master password."
@@ -1424,8 +1607,91 @@ private fun SettingsScreen(
         )
         SettingsItem("About Veylora", "Version 1.0.0 · Your Digital Life, Secured.", "ⓘ")
         Spacer(Modifier.height(20.dp))
-        Text("PIN and biometric unlock are convenience methods only. Your master password remains the recovery method.",
+        Text("PIN and biometric unlock are convenience methods only. If you forget the master password, the existing vault cannot be unlocked or reset. Keep your master password safe and create encrypted backups regularly.",
             color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
+    }
+    if (showMasterPasswordDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!masterPasswordBusy) {
+                    showMasterPasswordDialog = false
+                    currentMasterPassword = ""; newMasterPassword = ""; confirmMasterPassword = ""
+                }
+            },
+            containerColor = VeyloraSurface,
+            title = { Text("Change master password", color = VeyloraText) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text("Enter your current password, then choose a new password of at least 10 characters. Your encrypted vault data will remain intact.",
+                        color = VeyloraMuted, fontSize = 12.sp, lineHeight = 17.sp)
+                    OutlinedTextField(
+                        value = currentMasterPassword,
+                        onValueChange = { currentMasterPassword = it },
+                        label = { Text("Current master password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newMasterPassword,
+                        onValueChange = { newMasterPassword = it },
+                        label = { Text("New master password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = confirmMasterPassword,
+                        onValueChange = { confirmMasterPassword = it },
+                        label = { Text("Confirm new password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (masterPasswordMessage != null) {
+                        Text(masterPasswordMessage!!, color = Color(0xFFFF8A80), fontSize = 11.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !masterPasswordBusy,
+                    onClick = {
+                        when {
+                            currentMasterPassword.isBlank() -> masterPasswordMessage = "Enter your current password."
+                            newMasterPassword.length < 10 -> masterPasswordMessage = "New password must contain at least 10 characters."
+                            newMasterPassword != confirmMasterPassword -> masterPasswordMessage = "The new passwords do not match."
+                            else -> {
+                                masterPasswordBusy = true
+                                masterPasswordMessage = null
+                                val current = currentMasterPassword
+                                val next = newMasterPassword
+                                currentMasterPassword = ""; newMasterPassword = ""; confirmMasterPassword = ""
+                                onChangeMasterPassword(current, next) { success, message ->
+                                    masterPasswordBusy = false
+                                    if (success) {
+                                        showMasterPasswordDialog = false
+                                        masterPasswordMessage = null
+                                        backupMessage = "Master password changed successfully."
+                                    } else {
+                                        masterPasswordMessage = message ?: "Could not change the master password."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ) { Text(if (masterPasswordBusy) "Updating…" else "Change password", color = VeyloraGold) }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !masterPasswordBusy,
+                    onClick = {
+                        showMasterPasswordDialog = false
+                        currentMasterPassword = ""; newMasterPassword = ""; confirmMasterPassword = ""
+                    }
+                ) { Text("Cancel", color = VeyloraMuted) }
+            }
+        )
     }
     if (showGenerator) {
         PasswordGeneratorDialog(onDismiss = { showGenerator = false })
