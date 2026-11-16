@@ -64,7 +64,7 @@ object VaultBackupCrypto {
     @Synchronized
     fun decrypt(envelope: ByteArray, password: CharArray): ByteArray {
         if (password.size < MIN_PASSWORD_LENGTH) {
-            password.fill('\\u0000')
+            password.fill('\u0000')
             throw IllegalArgumentException("Backup password must contain at least $MIN_PASSWORD_LENGTH characters.")
         }
         if (envelope.size < HEADER_BYTES + 16 || envelope.size > MAX_PAYLOAD_BYTES + HEADER_BYTES + 16) {
