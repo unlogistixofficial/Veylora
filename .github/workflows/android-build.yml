@@ -7,6 +7,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -59,3 +62,61 @@ jobs:
           name: veylora-release-unsigned-apk
           path: app/build/outputs/apk/release/app-release-unsigned.apk
           if-no-files-found: error
+
+      - name: Check release signing secrets
+        id: signing
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [[ -n "$KEYSTORE_BASE64" && -n "$KEYSTORE_PASSWORD" && -n "$KEY_ALIAS" && -n "$KEY_PASSWORD" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Signing skipped: configure all four Android signing secrets to enable the signed release."
+          fi
+
+      - name: Sign and verify release APK
+        if: ${{ github.event_name == 'workflow_dispatch' && steps.signing.outputs.ready == 'true' }}
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/veylora-release.jks"
+          trap 'rm -f "$KEYSTORE"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out app/build/outputs/apk/release/app-release-signed.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release-signed.apk
+
+      - name: Upload signed release APK
+        if: ${{ github.event_name == 'workflow_dispatch' && steps.signing.outputs.ready == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: veylora-release-signed-apk
+          path: app/build/outputs/apk/release/app-release-signed.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: ${{ github.event_name == 'workflow_dispatch' && steps.signing.outputs.ready == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: Veylora v1.0.0
+          generate_release_notes: true
+          make_latest: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: app/build/outputs/apk/release/app-release-signed.apk
