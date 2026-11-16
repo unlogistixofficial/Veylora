@@ -214,6 +214,7 @@ private fun VeyloraDashboard(activity: MainActivity?) {
     var searchQuery by remember { mutableStateOf("") }
     var showEditor by remember { mutableStateOf(false) }
     var editingAccount by remember { mutableStateOf<VaultAccount?>(null) }
+    var pendingDelete by remember { mutableStateOf<VaultAccount?>(null) }
     var storageError by remember { mutableStateOf<String?>(null) }
     var accountsLoaded by remember { mutableStateOf(false) }
     val accounts = remember { mutableStateListOf<VaultAccount>() }
@@ -270,21 +271,7 @@ private fun VeyloraDashboard(activity: MainActivity?) {
                         accountsLoaded = accountsLoaded,
                         onAddClick = { editingAccount = null; showEditor = true },
                         onEdit = { editingAccount = it; showEditor = true },
-                        onDelete = { account ->
-                            scope.launch {
-                                try {
-                                    val stored = withContext(Dispatchers.IO) {
-                                        AccountVaultStore.delete(context, account.id)
-                                        AccountVaultStore.load(context)
-                                    }
-                                    accounts.clear()
-                                    accounts.addAll(stored)
-                                    storageError = null
-                                } catch (_: Exception) {
-                                    storageError = "Could not delete this account. The encrypted vault was left unchanged."
-                                }
-                            }
-                        }
+                        onDelete = { account -> pendingDelete = account }
                     )
                     VeyloraTab.FAVORITES -> EmptyCollectionScreen(
                         title = "Your favorites",
@@ -322,6 +309,44 @@ private fun VeyloraDashboard(activity: MainActivity?) {
             confirmButton = {
                 TextButton(onClick = { storageError = null }) {
                     Text("OK", color = VeyloraGold)
+                }
+            }
+        )
+    }
+
+    if (pendingDelete != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            containerColor = VeyloraSurface,
+            title = { Text("Delete account?", color = VeyloraText) },
+            text = {
+                Text("This permanently removes “${pendingDelete!!.title}” from this device's encrypted vault.",
+                    color = VeyloraMuted)
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val accountToDelete = pendingDelete
+                    pendingDelete = null
+                    if (accountToDelete != null) {
+                        scope.launch {
+                            try {
+                                val stored = withContext(Dispatchers.IO) {
+                                    AccountVaultStore.delete(context, accountToDelete.id)
+                                    AccountVaultStore.load(context)
+                                }
+                                accounts.clear()
+                                accounts.addAll(stored)
+                                storageError = null
+                            } catch (_: Exception) {
+                                storageError = "Could not delete this account. The encrypted vault was left unchanged."
+                            }
+                        }
+                    }
+                }) { Text("Delete", color = Color(0xFFFF8A80)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("Cancel", color = VeyloraMuted)
                 }
             }
         )
