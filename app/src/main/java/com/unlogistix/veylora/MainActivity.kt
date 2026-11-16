@@ -1345,7 +1345,7 @@ private fun AccountEditorDialog(
                                     scope.launch {
                                         try {
                                             val bytes = withContext(Dispatchers.IO) {
-                                                AccountVaultStore.readScreenshot(context, existingAccountId ?: return@launch, attachment.id)
+                                                AccountVaultStore.readScreenshot(context, account.id, attachment.id)
                                             }
                                             try {
                                                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -1378,7 +1378,7 @@ private fun AccountEditorDialog(
                                     scope.launch {
                                         try {
                                             withContext(Dispatchers.IO) {
-                                                AccountVaultStore.removeScreenshot(context, existingAccountId ?: return@launch, attachment.id)
+                                                AccountVaultStore.removeScreenshot(context, account.id, attachment.id)
                                             }
                                             attachments.remove(attachment)
                                             error = null
