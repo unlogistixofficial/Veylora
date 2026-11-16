@@ -404,7 +404,7 @@ object AccountVaultStore {
         }
 
         val accountBytes = accountArray.toString().toByteArray(StandardCharsets.UTF_8)
-        var estimatedSnapshotBytes = accountBytes.size.toLong() + 256L
+        var estimatedSnapshotBytes = accountBytes.size.toLong() + 512L
         accountBytes.fill(0)
         if (estimatedSnapshotBytes > 100L * 1024 * 1024) {
             throw GeneralSecurityException("Backup exceeds the supported 100 MB size.")
@@ -417,7 +417,7 @@ object AccountVaultStore {
                     val encoded = Base64.getEncoder().encodeToString(imageBytes)
                     // Include a conservative allowance for JSON keys, quotes, commas and IDs.
                     estimatedSnapshotBytes += encoded.length.toLong() +
-                        account.id.length + attachment.id.length + 256L
+                        account.id.length + attachment.id.length + 512L
                     if (estimatedSnapshotBytes > 100L * 1024 * 1024) {
                         throw GeneralSecurityException("Backup exceeds the supported 100 MB size.")
                     }
@@ -480,11 +480,11 @@ object AccountVaultStore {
             throw GeneralSecurityException("Backup screenshot data is incomplete.")
         }
 
-        val attachmentData = HashMap<String, ByteArray>(expectedScreenshots)
-        val knownAttachments = HashMap<String, Pair<String, VaultAttachment>>()
+        val attachmentData = HashMap<Pair<String, String>, ByteArray>(expectedScreenshots)
+        val knownAttachments = HashMap<Pair<String, String>, VaultAttachment>()
         importedAccounts.forEach { account ->
             account.attachments.forEach { attachment ->
-                knownAttachments["${account.id}|${attachment.id}"] = account.id to attachment
+                knownAttachments[account.id to attachment.id] = attachment
             }
         }
         try {
@@ -493,7 +493,7 @@ object AccountVaultStore {
                     ?: throw GeneralSecurityException("A backup screenshot record is invalid.")
                 val accountId = record.optString("accountId")
                 val attachmentId = record.optString("attachmentId")
-                val key = "$accountId|$attachmentId"
+                val key = accountId to attachmentId
                 val known = knownAttachments[key]
                     ?: throw GeneralSecurityException("Backup contains an unlinked screenshot.")
                 if (attachmentData.containsKey(key)) {
@@ -505,7 +505,7 @@ object AccountVaultStore {
                 } catch (error: Exception) {
                     throw GeneralSecurityException("A backup screenshot is corrupted.", error)
                 }
-                if (bytes.size.toLong() != known.second.sizeBytes ||
+                if (bytes.size.toLong() != known.sizeBytes ||
                     bytes.isEmpty() || bytes.size > MAX_ATTACHMENT_BYTES
                 ) {
                     bytes.fill(0)
@@ -518,7 +518,7 @@ object AccountVaultStore {
             val pendingWrites = ArrayList<Triple<String, VaultAttachment, ByteArray>>(expectedScreenshots)
             importedAccounts.forEach { account ->
                 val remappedAttachments = account.attachments.map { attachment ->
-                    val bytes = attachmentData["${account.id}|${attachment.id}"]
+                    val bytes = attachmentData[account.id to attachment.id]
                         ?: throw GeneralSecurityException("A backup screenshot is missing.")
                     val newAttachment = attachment.copy(id = UUID.randomUUID().toString())
                     pendingWrites.add(Triple(account.id, newAttachment, bytes))
