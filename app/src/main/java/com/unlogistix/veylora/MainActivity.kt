@@ -1308,7 +1308,7 @@ private fun AccountEditorDialog(
                             notes = notes,
                             category = category,
                             customFields = nonEmptyFields,
-                            attachments = account?.attachments.orEmpty(),
+                            attachments = attachments.toList(),
                             isFavorite = account?.isFavorite ?: false,
                             createdAt = account?.createdAt ?: System.currentTimeMillis(),
                             updatedAt = System.currentTimeMillis()
