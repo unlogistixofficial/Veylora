@@ -52,7 +52,7 @@ object VaultBackupCrypto {
                 .put(ciphertext)
                 .array()
         } finally {
-            password.fill('\u0000')
+            password.fill(0.toChar())
             salt.fill(0)
             nonce.fill(0)
             key?.fill(0)
@@ -64,11 +64,11 @@ object VaultBackupCrypto {
     @Synchronized
     fun decrypt(envelope: ByteArray, password: CharArray): ByteArray {
         if (password.size < MIN_PASSWORD_LENGTH) {
-            password.fill('\u0000')
+            password.fill(0.toChar())
             throw IllegalArgumentException("Backup password must contain at least $MIN_PASSWORD_LENGTH characters.")
         }
         if (envelope.size < HEADER_BYTES + 16 || envelope.size > MAX_PAYLOAD_BYTES + HEADER_BYTES + 16) {
-            password.fill('\u0000')
+            password.fill(0.toChar())
             throw GeneralSecurityException("Backup file size is invalid.")
         }
 
@@ -98,7 +98,7 @@ object VaultBackupCrypto {
                 throw GeneralSecurityException("Backup password is incorrect or the file has been modified.", error)
             }
         } finally {
-            password.fill('\u0000')
+            password.fill(0.toChar())
             salt?.fill(0)
             nonce?.fill(0)
             ciphertext?.fill(0)
@@ -111,7 +111,7 @@ object VaultBackupCrypto {
             "Backup payload must be between 1 byte and 100 MB."
         }
         require(password.size >= MIN_PASSWORD_LENGTH) {
-            password.fill('\u0000')
+            password.fill(0.toChar())
             "Backup password must contain at least $MIN_PASSWORD_LENGTH characters."
         }
     }
