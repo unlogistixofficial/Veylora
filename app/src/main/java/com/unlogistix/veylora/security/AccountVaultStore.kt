@@ -14,6 +14,7 @@ import java.nio.file.StandardCopyOption
 import java.security.GeneralSecurityException
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -359,6 +360,204 @@ object AccountVaultStore {
         } finally {
             key?.fill(0)
             envelope.fill(0)
+        }
+    }
+
+
+    /**
+     * Creates a portable plaintext snapshot. Callers must immediately protect the
+     * returned bytes with VaultBackupCrypto and clear them after use.
+     */
+    @Synchronized
+    fun exportBackupSnapshot(context: Context): ByteArray {
+        val accounts = load(context)
+        val accountArray = JSONArray()
+        val screenshotArray = JSONArray()
+        accounts.forEach { account ->
+            accountArray.put(
+                JSONObject()
+                    .put("id", account.id)
+                    .put("title", account.title)
+                    .put("username", account.username)
+                    .put("password", account.password)
+                    .put("website", account.website)
+                    .put("notes", account.notes)
+                    .put("category", account.category)
+                    .put("customFields", JSONArray().apply {
+                        account.customFields.forEach { field ->
+                            put(JSONObject().put("id", field.id).put("label", field.label).put("value", field.value))
+                        }
+                    })
+                    .put("isFavorite", account.isFavorite)
+                    .put("attachments", JSONArray().apply {
+                        account.attachments.forEach { attachment ->
+                            put(JSONObject().put("id", attachment.id)
+                                .put("displayName", attachment.displayName)
+                                .put("mimeType", attachment.mimeType)
+                                .put("sizeBytes", attachment.sizeBytes))
+                        }
+                    })
+                    .put("createdAt", account.createdAt)
+                    .put("updatedAt", account.updatedAt)
+            )
+            account.attachments.forEach { attachment ->
+                val imageBytes = readScreenshot(context, account.id, attachment.id)
+                try {
+                    screenshotArray.put(
+                        JSONObject()
+                            .put("accountId", account.id)
+                            .put("attachmentId", attachment.id)
+                            .put("data", Base64.getEncoder().encodeToString(imageBytes))
+                    )
+                } finally {
+                    imageBytes.fill(0)
+                }
+            }
+        }
+        val snapshot = JSONObject()
+            .put("format", "VEYloraBackup")
+            .put("version", 1)
+            .put("accounts", accountArray)
+            .put("screenshots", screenshotArray)
+            .toString()
+            .toByteArray(StandardCharsets.UTF_8)
+        if (snapshot.isEmpty() || snapshot.size > 100 * 1024 * 1024) {
+            snapshot.fill(0)
+            throw GeneralSecurityException("Backup exceeds the supported 100 MB size.")
+        }
+        return snapshot
+    }
+
+    /**
+     * Replaces the current vault only after the complete snapshot and every
+     * screenshot have been validated and re-encrypted with this device's vault key.
+     */
+    @Synchronized
+    fun restoreBackupSnapshot(context: Context, payload: ByteArray) {
+        if (payload.isEmpty() || payload.size > 100 * 1024 * 1024) {
+            throw GeneralSecurityException("Backup payload size is invalid.")
+        }
+        val root = try {
+            JSONObject(String(payload, StandardCharsets.UTF_8))
+        } catch (error: Exception) {
+            throw GeneralSecurityException("Backup contents are invalid.", error)
+        }
+        if (root.optString("format") != "VEYloraBackup" || root.optInt("version", -1) != 1) {
+            throw GeneralSecurityException("This backup format is not supported.")
+        }
+        val importedAccounts = decodeAccounts(
+            root.optJSONArray("accounts")
+                ?: throw GeneralSecurityException("Backup account data is missing.")
+        )
+        val oldAccounts = load(context)
+        val screenshotRecords = root.optJSONArray("screenshots")
+            ?: throw GeneralSecurityException("Backup screenshot data is missing.")
+        val expectedScreenshots = importedAccounts.sumOf { it.attachments.size }
+        if (screenshotRecords.length() != expectedScreenshots) {
+            throw GeneralSecurityException("Backup screenshot data is incomplete.")
+        }
+
+        val attachmentData = HashMap<String, ByteArray>(expectedScreenshots)
+        val knownAttachments = HashMap<String, Pair<String, VaultAttachment>>()
+        importedAccounts.forEach { account ->
+            account.attachments.forEach { attachment ->
+                knownAttachments["${account.id}|${attachment.id}"] = account.id to attachment
+            }
+        }
+        try {
+            for (index in 0 until screenshotRecords.length()) {
+                val record = screenshotRecords.optJSONObject(index)
+                    ?: throw GeneralSecurityException("A backup screenshot record is invalid.")
+                val accountId = record.optString("accountId")
+                val attachmentId = record.optString("attachmentId")
+                val key = "$accountId|$attachmentId"
+                val known = knownAttachments[key]
+                    ?: throw GeneralSecurityException("Backup contains an unlinked screenshot.")
+                if (attachmentData.containsKey(key)) {
+                    throw GeneralSecurityException("Backup contains duplicate screenshots.")
+                }
+                val encoded = record.optString("data")
+                val bytes = try {
+                    Base64.getDecoder().decode(encoded)
+                } catch (error: Exception) {
+                    throw GeneralSecurityException("A backup screenshot is corrupted.", error)
+                }
+                if (bytes.size.toLong() != known.second.sizeBytes ||
+                    bytes.isEmpty() || bytes.size > MAX_ATTACHMENT_BYTES
+                ) {
+                    bytes.fill(0)
+                    throw GeneralSecurityException("A backup screenshot does not match its metadata.")
+                }
+                attachmentData[key] = bytes
+            }
+
+            val remappedAccounts = ArrayList<VaultAccount>(importedAccounts.size)
+            val pendingWrites = ArrayList<Triple<String, VaultAttachment, ByteArray>>(expectedScreenshots)
+            importedAccounts.forEach { account ->
+                val remappedAttachments = account.attachments.map { attachment ->
+                    val bytes = attachmentData["${account.id}|${attachment.id}"]
+                        ?: throw GeneralSecurityException("A backup screenshot is missing.")
+                    val newAttachment = attachment.copy(id = UUID.randomUUID().toString())
+                    pendingWrites.add(Triple(account.id, newAttachment, bytes))
+                    newAttachment
+                }
+                val remapped = account.copy(attachments = remappedAttachments)
+                validate(remapped)
+                remappedAccounts.add(remapped)
+            }
+
+            val writtenFiles = ArrayList<File>(pendingWrites.size)
+            try {
+                pendingWrites.forEach { (accountId, attachment, bytes) ->
+                    writeScreenshotBytes(context, accountId, attachment, bytes)
+                    writtenFiles.add(attachmentFile(context, attachment.id))
+                }
+                save(context, remappedAccounts)
+            } catch (error: Exception) {
+                writtenFiles.forEach { it.delete() }
+                throw error
+            }
+
+            oldAccounts.flatMap { it.attachments }.forEach { oldAttachment ->
+                attachmentFile(context, oldAttachment.id).delete()
+            }
+        } finally {
+            attachmentData.values.forEach { it.fill(0) }
+        }
+    }
+
+    private fun writeScreenshotBytes(
+        context: Context,
+        accountId: String,
+        attachment: VaultAttachment,
+        plaintext: ByteArray
+    ) {
+        if (plaintext.isEmpty() || plaintext.size.toLong() != attachment.sizeBytes ||
+            plaintext.size > MAX_ATTACHMENT_BYTES
+        ) {
+            throw GeneralSecurityException("Screenshot data does not match its metadata.")
+        }
+        val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
+        var key: ByteArray? = null
+        var ciphertext: ByteArray? = null
+        try {
+            key = VaultSession.keyCopy()
+            if (key.size != KEY_BYTES) throw GeneralSecurityException("Vault key has an invalid length.")
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+            cipher.updateAAD(attachmentAad(accountId, attachment.id))
+            ciphertext = cipher.doFinal(plaintext)
+            val envelope = ByteBuffer.allocate(ATTACHMENT_MAGIC.size + NONCE_BYTES + ciphertext.size)
+                .put(ATTACHMENT_MAGIC).put(nonce).put(ciphertext).array()
+            try {
+                atomicWriteAttachment(context, attachment.id, envelope)
+            } finally {
+                envelope.fill(0)
+            }
+        } finally {
+            nonce.fill(0)
+            key?.fill(0)
+            ciphertext?.fill(0)
         }
     }
 
