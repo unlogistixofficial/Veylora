@@ -540,10 +540,20 @@ private fun VeyloraDashboard(activity: MainActivity?) {
                     try {
                         val stored = withContext(Dispatchers.IO) {
                             AccountVaultStore.upsert(context, account)
-                            pendingScreenshots.forEach { uri ->
-                                AccountVaultStore.addScreenshot(
-                                    context, account.id, uri, uri.lastPathSegment ?: "Screenshot"
-                                )
+                            val newlyAttached = mutableListOf<VaultAttachment>()
+                            try {
+                                pendingScreenshots.forEach { uri ->
+                                    newlyAttached += AccountVaultStore.addScreenshot(
+                                        context, account.id, uri, uri.lastPathSegment ?: "Screenshot"
+                                    )
+                                }
+                            } catch (failure: Exception) {
+                                newlyAttached.forEach { attachment ->
+                                    try {
+                                        AccountVaultStore.removeScreenshot(context, account.id, attachment.id)
+                                    } catch (_: Exception) { }
+                                }
+                                throw failure
                             }
                             AccountVaultStore.load(context)
                         }
@@ -1135,10 +1145,13 @@ private fun AccountEditorDialog(
     var title by remember(account?.id) { mutableStateOf(account?.title.orEmpty()) }
     var username by remember(account?.id) { mutableStateOf(account?.username.orEmpty()) }
     var password by remember(account?.id) { mutableStateOf(account?.password.orEmpty()) }
+    var showAccountPassword by remember(account?.id) { mutableStateOf(false) }
     var website by remember(account?.id) { mutableStateOf(account?.website.orEmpty()) }
     var notes by remember(account?.id) { mutableStateOf(account?.notes.orEmpty()) }
+    val draftAccountId = remember(account?.id) { account?.id ?: java.util.UUID.randomUUID().toString() }
     var category by remember(account?.id, initialCategory) { mutableStateOf(account?.category ?: initialCategory ?: "Other") }
     var categoryExpanded by remember { mutableStateOf(false) }
+    val revealedCustomFields = remember(account?.id) { mutableStateListOf<String>() }
     val customFields = remember(account?.id, initialCategory) {
         mutableStateListOf<AccountCustomField>().apply {
             addAll(account?.customFields.orEmpty())
@@ -1226,9 +1239,19 @@ private fun AccountEditorDialog(
                 OutlinedTextField(username, { username = it }, label = {
                     Text(if (category == "Email") "Email address" else "Username / ID name")
                 }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(password, { password = it }, label = { Text("Password") },
-                    singleLine = true, visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    visualTransformation = if (showAccountPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        TextButton(onClick = { showAccountPassword = !showAccountPassword }) {
+                            Text(if (showAccountPassword) "Hide" else "Show", color = VeyloraGold)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
                 TextButton(onClick = {
                     password = generateSecurePassword(20)
                 }) { Text("Generate secure password", color = VeyloraGold) }
@@ -1298,12 +1321,23 @@ private fun AccountEditorDialog(
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
+                            val isSecretField = field.label.contains("password", ignoreCase = true)
                             OutlinedTextField(
                                 value = field.value,
                                 onValueChange = { value ->
                                     customFields[index] = field.copy(value = value)
                                 },
                                 label = { Text("Field value") },
+                                visualTransformation = if (isSecretField && field.id !in revealedCustomFields)
+                                    PasswordVisualTransformation() else VisualTransformation.None,
+                                trailingIcon = if (isSecretField) ({
+                                    TextButton(onClick = {
+                                        if (field.id in revealedCustomFields) revealedCustomFields.remove(field.id)
+                                        else revealedCustomFields.add(field.id)
+                                    }) {
+                                        Text(if (field.id in revealedCustomFields) "Hide" else "Show", color = VeyloraGold)
+                                    }
+                                }) else null,
                                 modifier = Modifier.fillMaxWidth()
                             )
                             TextButton(onClick = { customFields.removeAt(index) }) {
@@ -1435,7 +1469,7 @@ private fun AccountEditorDialog(
                         error = "A custom field exceeds the allowed length."
                     else -> onSave(
                         VaultAccount(
-                            id = account?.id ?: java.util.UUID.randomUUID().toString(),
+                            id = draftAccountId,
                             title = title.trim(),
                             username = username,
                             password = password,
