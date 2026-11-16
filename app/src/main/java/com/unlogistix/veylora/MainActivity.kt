@@ -803,7 +803,11 @@ private fun HomeScreen(
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OverviewCard(if (accountsLoaded) accounts.size.toString() else "—", "ACCOUNTS", Modifier.weight(1f))
-            OverviewCard("—", "FAVORITES", Modifier.weight(1f))
+            OverviewCard(
+                if (accountsLoaded) accounts.count { it.isFavorite }.toString() else "—",
+                "FAVORITES",
+                Modifier.weight(1f)
+            )
         }
 
         Spacer(Modifier.height(26.dp))
@@ -1267,11 +1271,13 @@ private fun AccountEditorDialog(
                         }
                     }
                     TextButton(
-                        onClick = { screenshotPicker.launch("image/*") },
+                        onClick = {
+                            activity?.beginExternalPicker()
+                            screenshotPicker.launch("image/*")
+                        },
                         enabled = attachments.size < 20
                     ) {
-                        activity?.beginExternalPicker()
-                        screenshotPicker.launch("image/*")
+                        Text("＋ Add screenshot", color = VeyloraGold)
                     }
                     Text("JPEG, PNG or WebP • Maximum 8 MB each • Encrypted on this device",
                         color = VeyloraMuted, fontSize = 10.sp, lineHeight = 14.sp)
