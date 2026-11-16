@@ -171,8 +171,8 @@ object VaultCrypto {
                 .commit()
             if (!saved) throw GeneralSecurityException("Could not save the new master password.")
         } finally {
-            currentPassword.fill('\\u0000')
-            newPassword.fill('\\u0000')
+            currentPassword.fill('\u0000')
+            newPassword.fill('\u0000')
             vaultKey?.fill(0)
             salt?.fill(0)
             nonce?.fill(0)
