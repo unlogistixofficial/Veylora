@@ -445,10 +445,14 @@ object AccountVaultStore {
         if (root.optString("format") != "VEYloraBackup" || root.optInt("version", -1) != 1) {
             throw GeneralSecurityException("This backup format is not supported.")
         }
-        val importedAccounts = decodeAccounts(
-            root.optJSONArray("accounts")
-                ?: throw GeneralSecurityException("Backup account data is missing.")
-        )
+        val accountJson = (root.optJSONArray("accounts")
+            ?: throw GeneralSecurityException("Backup account data is missing."))
+            .toString().toByteArray(StandardCharsets.UTF_8)
+        val importedAccounts = try {
+            decodeAccounts(accountJson)
+        } finally {
+            accountJson.fill(0)
+        }
         val oldAccounts = load(context)
         val screenshotRecords = root.optJSONArray("screenshots")
             ?: throw GeneralSecurityException("Backup screenshot data is missing.")
