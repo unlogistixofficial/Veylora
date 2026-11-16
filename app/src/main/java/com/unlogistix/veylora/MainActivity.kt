@@ -7,6 +7,9 @@ import androidx.biometric.BiometricPrompt
 import androidx.biometric.BiometricManager
 import androidx.core.content.ContextCompat
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -22,6 +25,7 @@ import com.unlogistix.veylora.security.InvalidMasterPasswordException
 import com.unlogistix.veylora.security.AccountVaultStore
 import com.unlogistix.veylora.security.VaultAccount
 import com.unlogistix.veylora.security.AccountCustomField
+import com.unlogistix.veylora.security.VaultAttachment
 import com.unlogistix.veylora.security.BiometricVaultUnlock
 import com.unlogistix.veylora.security.PinVaultUnlock
 import com.unlogistix.veylora.security.PinUnlockResult
@@ -814,7 +818,35 @@ private fun AccountEditorDialog(
     val customFields = remember(account?.id) {
         mutableStateListOf<AccountCustomField>().apply { addAll(account?.customFields.orEmpty()) }
     }
+    val attachments = remember(account?.id) {
+        mutableStateListOf<VaultAttachment>().apply { addAll(account?.attachments.orEmpty()) }
+    }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
+    val screenshotPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        val existingAccount = account
+        if (uri != null && existingAccount != null) {
+            scope.launch {
+                try {
+                    val saved = withContext(Dispatchers.IO) {
+                        AccountVaultStore.addScreenshot(
+                            context,
+                            existingAccount.id,
+                            uri,
+                            uri.lastPathSegment ?: "Screenshot"
+                        )
+                    }
+                    attachments.add(saved)
+                    error = null
+                } catch (failure: Exception) {
+                    error = failure.message ?: "Could not securely attach this screenshot."
+                }
+            }
+        }
+    }
     val categories = listOf("Social", "Email", "Finance", "Gaming", "Work", "Shopping", "Entertainment", "Other")
 
     AlertDialog(
@@ -902,6 +934,47 @@ private fun AccountEditorDialog(
                     enabled = customFields.size < 30
                 ) {
                     Text("＋ Add custom field", color = VeyloraGold)
+                }
+                Text("SCREENSHOT ATTACHMENTS", color = VeyloraGold, fontSize = 10.sp,
+                    letterSpacing = 1.5.sp, fontWeight = FontWeight.SemiBold)
+                if (account == null) {
+                    Text("Save this account first to attach screenshots.", color = VeyloraMuted, fontSize = 11.sp)
+                } else {
+                    attachments.forEach { attachment ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(attachment.displayName, color = VeyloraText, fontSize = 12.sp,
+                                    maxLines = 1)
+                                Text(
+                                    "${attachment.mimeType} • ${(attachment.sizeBytes / 1024).coerceAtLeast(1)} KB",
+                                    color = VeyloraMuted, fontSize = 10.sp
+                                )
+                            }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    try {
+                                        withContext(Dispatchers.IO) {
+                                            AccountVaultStore.removeScreenshot(context, account.id, attachment.id)
+                                        }
+                                        attachments.remove(attachment)
+                                        error = null
+                                    } catch (failure: Exception) {
+                                        error = failure.message ?: "Could not remove this screenshot."
+                                    }
+                                }
+                            }) { Text("Remove", color = Color(0xFFFF8A80)) }
+                        }
+                    }
+                    TextButton(
+                        onClick = { screenshotPicker.launch("image/*") },
+                        enabled = attachments.size < 20
+                    ) { Text("＋ Attach screenshot", color = VeyloraGold) }
+                    Text("JPEG, PNG or WebP • Maximum 8 MB each • Encrypted on this device",
+                        color = VeyloraMuted, fontSize = 10.sp, lineHeight = 14.sp)
                 }
                 if (error != null) Text(error!!, color = Color(0xFFFF8A80), fontSize = 11.sp)
             }
