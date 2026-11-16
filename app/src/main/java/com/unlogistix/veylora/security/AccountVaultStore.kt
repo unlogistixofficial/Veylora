@@ -49,7 +49,7 @@ data class VaultAccount(
     val category: String = "Other",
     val customFields: List<AccountCustomField> = emptyList(),
     val attachments: List<VaultAttachment> = emptyList(),
-    val createdAt = System.currentTimeMillis(),
+    val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = createdAt
 )
 
@@ -211,8 +211,14 @@ object AccountVaultStore {
     @Synchronized
     fun delete(context: Context, accountId: String) {
         val accounts = load(context)
-        if (accounts.none { it.id == accountId }) return
+        val account = accounts.firstOrNull { it.id == accountId } ?: return
         save(context, accounts.filterNot { it.id == accountId })
+        account.attachments.forEach { attachment ->
+            val file = attachmentFile(context, attachment.id)
+            if (file.exists() && !file.delete()) {
+                throw GeneralSecurityException("Account was deleted, but an encrypted screenshot file could not be removed.")
+            }
+        }
     }
 
     @Synchronized
@@ -359,6 +365,10 @@ object AccountVaultStore {
         val file = dataFile(context)
         if (file.exists() && !file.delete()) {
             throw GeneralSecurityException("Could not remove encrypted account storage.")
+        }
+        val directory = File(context.applicationContext.noBackupFilesDir, ATTACHMENT_DIR)
+        if (directory.exists() && !directory.deleteRecursively()) {
+            throw GeneralSecurityException("Could not remove encrypted screenshot storage.")
         }
     }
 
