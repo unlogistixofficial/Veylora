@@ -49,6 +49,7 @@ data class VaultAccount(
     val category: String = "Other",
     val customFields: List<AccountCustomField> = emptyList(),
     val attachments: List<VaultAttachment> = emptyList(),
+    val isFavorite: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = createdAt
 )
@@ -148,6 +149,7 @@ object AccountVaultStore {
                             put(JSONObject().put("id", field.id).put("label", field.label).put("value", field.value))
                         }
                     })
+                    .put("isFavorite", account.isFavorite)
                     .put("attachments", JSONArray().apply {
                         account.attachments.forEach { attachment ->
                             put(JSONObject().put("id", attachment.id)
@@ -398,6 +400,7 @@ object AccountVaultStore {
                     category = item.optString("category", "Other"),
                     customFields = decodeCustomFields(item.optJSONArray("customFields")),
                     attachments = decodeAttachments(item.optJSONArray("attachments")),
+                    isFavorite = item.optBoolean("isFavorite", false),
                     createdAt = item.optLong("createdAt", 0L),
                     updatedAt = item.optLong("updatedAt", 0L)
                 )
