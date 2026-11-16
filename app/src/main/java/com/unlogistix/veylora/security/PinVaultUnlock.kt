@@ -52,8 +52,13 @@ object PinVaultUnlock {
 
     @Synchronized
     fun enable(context: Context, pin: CharArray) {
-        validatePin(pin)
-        check(VaultSession.isUnlocked()) { "Unlock the vault before setting a PIN." }
+        try {
+            validatePin(pin)
+            check(VaultSession.isUnlocked()) { "Unlock the vault before setting a PIN." }
+        } catch (error: Exception) {
+            pin.fill('\u0000')
+            throw error
+        }
         val vaultKey = VaultSession.keyCopy()
         var wrappingKey: ByteArray? = null
         try {
