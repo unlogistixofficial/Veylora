@@ -12,11 +12,15 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.unlogistix.veylora.security.InvalidMasterPasswordException
+import com.unlogistix.veylora.security.AccountVaultStore
+import com.unlogistix.veylora.security.VaultAccount
 import com.unlogistix.veylora.security.BiometricVaultUnlock
 import com.unlogistix.veylora.security.PinVaultUnlock
 import com.unlogistix.veylora.security.PinUnlockResult
@@ -203,57 +207,93 @@ private fun VeyloraApp(sessionVersion: Int) {
 
 @Composable
 private fun VeyloraDashboard(activity: MainActivity?) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var selectedTab by remember { mutableStateOf(VeyloraTab.HOME) }
-    var showVaultNotice by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var showEditor by remember { mutableStateOf(false) }
+    var editingAccount by remember { mutableStateOf<VaultAccount?>(null) }
+    var storageError by remember { mutableStateOf<String?>(null) }
+    var accountsLoaded by remember { mutableStateOf(false) }
+    val accounts = remember { mutableStateListOf<VaultAccount>() }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = VeyloraBlack
-    ) {
+    LaunchedEffect(context) {
+        try {
+            val stored = withContext(Dispatchers.IO) { AccountVaultStore.load(context) }
+            accounts.clear()
+            accounts.addAll(stored)
+            storageError = null
+        } catch (_: Exception) {
+            storageError = "Could not read the encrypted vault. Your stored data has not been changed."
+        } finally {
+            accountsLoaded = true
+        }
+    }
+
+    fun refreshAccounts() {
+        scope.launch {
+            try {
+                val stored = withContext(Dispatchers.IO) { AccountVaultStore.load(context) }
+                accounts.clear()
+                accounts.addAll(stored)
+                storageError = null
+            } catch (_: Exception) {
+                storageError = "Could not refresh encrypted account storage."
+            }
+        }
+    }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = VeyloraBlack) {
         androidx.compose.material3.Scaffold(
             containerColor = VeyloraBlack,
             bottomBar = {
-                NavigationBar(
-                    containerColor = Color(0xFF111113),
-                    contentColor = VeyloraText
-                ) {
+                NavigationBar(containerColor = Color(0xFF111113), contentColor = VeyloraText) {
                     VeyloraTab.entries.forEach { tab ->
                         NavigationBarItem(
                             selected = selectedTab == tab,
                             onClick = { selectedTab = tab },
                             icon = {
-                                Text(
-                                    text = tab.symbol,
-                                    fontSize = 21.sp,
-                                    color = if (selectedTab == tab) VeyloraGold else VeyloraMuted
-                                )
+                                Text(tab.symbol, fontSize = 21.sp,
+                                    color = if (selectedTab == tab) VeyloraGold else VeyloraMuted)
                             },
-                            label = {
-                                Text(
-                                    text = tab.label,
-                                    fontSize = 11.sp
-                                )
-                            }
+                            label = { Text(tab.label, fontSize = 11.sp) }
                         )
                     }
                 }
             }
         ) { innerPadding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
+            Box(Modifier.fillMaxSize().padding(innerPadding)) {
                 when (selectedTab) {
-                    VeyloraTab.HOME -> HomeScreen(onAddClick = { showVaultNotice = true })
+                    VeyloraTab.HOME -> HomeScreen(
+                        accounts = accounts,
+                        accountsLoaded = accountsLoaded,
+                        onAddClick = { editingAccount = null; showEditor = true },
+                        onEdit = { editingAccount = it; showEditor = true },
+                        onDelete = { account ->
+                            scope.launch {
+                                try {
+                                    val stored = withContext(Dispatchers.IO) {
+                                        AccountVaultStore.delete(context, account.id)
+                                        AccountVaultStore.load(context)
+                                    }
+                                    accounts.clear()
+                                    accounts.addAll(stored)
+                                    storageError = null
+                                } catch (_: Exception) {
+                                    storageError = "Could not delete this account. The encrypted vault was left unchanged."
+                                }
+                            }
+                        }
+                    )
                     VeyloraTab.FAVORITES -> EmptyCollectionScreen(
                         title = "Your favorites",
-                        message = "Accounts you mark as favorites will appear here."
+                        message = "Favorite organization will be available in a later step."
                     )
                     VeyloraTab.SEARCH -> SearchScreen(
                         query = searchQuery,
-                        onQueryChange = { searchQuery = it }
+                        onQueryChange = { searchQuery = it },
+                        accounts = accounts,
+                        onEdit = { editingAccount = it; showEditor = true }
                     )
                     VeyloraTab.SETTINGS -> SettingsScreen(
                         biometricEnabled = activity?.let { BiometricVaultUnlock.isEnabled(it) } == true,
@@ -272,28 +312,46 @@ private fun VeyloraDashboard(activity: MainActivity?) {
         }
     }
 
-    if (showVaultNotice) {
+    if (storageError != null) {
         AlertDialog(
-            onDismissRequest = { showVaultNotice = false },
+            onDismissRequest = { storageError = null },
             containerColor = VeyloraSurface,
-            title = {
-                Text("Account storage is next", color = VeyloraText, fontWeight = FontWeight.SemiBold)
-            },
-            text = {
-                Text(
-                    "Master-password protection is active, but account storage is still under development. Do not enter real account passwords yet.",
-                    color = VeyloraMuted
-                )
-            },
+            title = { Text("Vault storage notice", color = VeyloraText) },
+            text = { Text(storageError!!, color = VeyloraMuted) },
             confirmButton = {
-                TextButton(onClick = { showVaultNotice = false }) {
-                    Text("Got it", color = VeyloraGold)
+                TextButton(onClick = { storageError = null }) {
+                    Text("OK", color = VeyloraGold)
+                }
+            }
+        )
+    }
+
+    if (showEditor) {
+        AccountEditorDialog(
+            account = editingAccount,
+            onDismiss = { showEditor = false; editingAccount = null },
+            onSave = { account ->
+                scope.launch {
+                    try {
+                        val stored = withContext(Dispatchers.IO) {
+                            AccountVaultStore.upsert(context, account)
+                            AccountVaultStore.load(context)
+                        }
+                        accounts.clear()
+                        accounts.addAll(stored)
+                        storageError = null
+                        showEditor = false
+                        editingAccount = null
+                    } catch (error: IllegalArgumentException) {
+                        storageError = error.message ?: "Please check the account details."
+                    } catch (_: Exception) {
+                        storageError = "Could not save the account securely. Your existing vault data was preserved."
+                    }
                 }
             }
         )
     }
 }
-
 
 @Composable
 private fun VaultGateScreen(
@@ -490,11 +548,15 @@ private fun VaultGateScreen(
 }
 
 @Composable
-private fun HomeScreen(onAddClick: () -> Unit) {
+private fun HomeScreen(
+    accounts: List<VaultAccount>,
+    accountsLoaded: Boolean,
+    onAddClick: () -> Unit,
+    onEdit: (VaultAccount) -> Unit,
+    onDelete: (VaultAccount) -> Unit
+) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             .padding(horizontal = 22.dp, vertical = 20.dp)
     ) {
         Row(
@@ -503,17 +565,13 @@ private fun HomeScreen(onAddClick: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text("VEY LORA".replace(" ", ""), color = VeyloraText, fontSize = 19.sp,
+                Text("VEYLORA", color = VeyloraText, fontSize = 19.sp,
                     letterSpacing = 3.sp, fontWeight = FontWeight.SemiBold)
                 Text("YOUR PRIVATE SPACE", color = VeyloraMuted, fontSize = 9.sp,
                     letterSpacing = 2.sp)
             }
-            Box(
-                modifier = Modifier
-                    .size(42.dp)
-                    .background(VeyloraSurface, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(Modifier.size(42.dp).background(VeyloraSurface, CircleShape),
+                contentAlignment = Alignment.Center) {
                 Text("V", color = VeyloraGold, fontSize = 22.sp, fontWeight = FontWeight.Light)
             }
         }
@@ -530,34 +588,23 @@ private fun HomeScreen(onAddClick: () -> Unit) {
             colors = CardDefaults.cardColors(containerColor = Color(0xFF201D17))
         ) {
             Column(Modifier.padding(20.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(34.dp).background(Color(0xFF342B1C), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("✦", color = VeyloraGold, fontSize = 18.sp)
-                    }
-                    Spacer(Modifier.size(10.dp))
-                    Text("VAULT STATUS", color = VeyloraGold, fontSize = 11.sp,
-                        letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
-                }
-                Spacer(Modifier.height(18.dp))
-                Text("Encrypted vault ready", color = VeyloraText, fontSize = 21.sp,
+                Text("VAULT STATUS", color = VeyloraGold, fontSize = 11.sp,
+                    letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(14.dp))
+                Text("Encrypted account vault", color = VeyloraText, fontSize = 21.sp,
                     fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
-                Text("Your master password protects a randomly generated vault key. Secure account storage is the next milestone.",
+                Text("Account details are encrypted on this device with your vault key.",
                     color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp)
                 Spacer(Modifier.height(18.dp))
                 Button(
                     onClick = onAddClick,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = VeyloraGold,
-                        contentColor = VeyloraBlack
-                    ),
+                    colors = ButtonDefaults.buttonColors(containerColor = VeyloraGold,
+                        contentColor = VeyloraBlack),
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("＋   Add your first account", fontWeight = FontWeight.SemiBold)
+                    Text("＋   Add account", fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -567,22 +614,50 @@ private fun HomeScreen(onAddClick: () -> Unit) {
             letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OverviewCard("0", "ACCOUNTS", Modifier.weight(1f))
-            OverviewCard("0", "FAVORITES", Modifier.weight(1f))
+            OverviewCard(if (accountsLoaded) accounts.size.toString() else "—", "ACCOUNTS", Modifier.weight(1f))
+            OverviewCard("—", "FAVORITES", Modifier.weight(1f))
         }
 
         Spacer(Modifier.height(26.dp))
-        Text("CATEGORIES", color = VeyloraMuted, fontSize = 11.sp,
+        Text("YOUR ACCOUNTS", color = VeyloraMuted, fontSize = 11.sp,
             letterSpacing = 1.8.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(12.dp))
-        CategoryRow("◈", "Social media", "Facebook · Instagram · TikTok")
-        CategoryRow("✉", "Email & Google", "Gmail · Microsoft · Other email")
-        CategoryRow("◇", "Finance", "Banking · Payments")
-        CategoryRow("▣", "Gaming & more", "Games · Websites · Applications")
-        Spacer(Modifier.height(22.dp))
-        Text("Veylora is currently in development. No account data is stored in this build.",
+        Spacer(Modifier.height(10.dp))
+        if (!accountsLoaded) {
+            Text("Unlocking encrypted records…", color = VeyloraMuted, fontSize = 13.sp)
+        } else if (accounts.isEmpty()) {
+            Text("Your vault is empty. Add your first account to get started.",
+                color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp)
+        } else {
+            accounts.forEach { account ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    shape = RoundedCornerShape(15.dp),
+                    colors = CardDefaults.cardColors(containerColor = VeyloraSurface)
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(account.title, color = VeyloraText, fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            account.username.ifBlank { account.website.ifBlank { account.category } },
+                            color = VeyloraMuted, fontSize = 12.sp
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { onEdit(account) }) {
+                                Text("Edit", color = VeyloraGold)
+                            }
+                            TextButton(onClick = { onDelete(account) }) {
+                                Text("Delete", color = Color(0xFFFF8A80))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        Text("Account records are encrypted before they are written to app-private storage.",
             color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
-        Spacer(Modifier.height(12.dp))
     }
 }
 
@@ -644,11 +719,23 @@ private fun EmptyCollectionScreen(title: String, message: String) {
 }
 
 @Composable
-private fun SearchScreen(query: String, onQueryChange: (String) -> Unit) {
-    Column(Modifier.fillMaxSize().padding(22.dp)) {
+private fun SearchScreen(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    accounts: List<VaultAccount>,
+    onEdit: (VaultAccount) -> Unit
+) {
+    val filtered = accounts.filter { account ->
+        query.isBlank() ||
+            account.title.contains(query, ignoreCase = true) ||
+            account.username.contains(query, ignoreCase = true) ||
+            account.website.contains(query, ignoreCase = true) ||
+            account.category.contains(query, ignoreCase = true)
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp)) {
         Text("Search", color = VeyloraText, fontSize = 27.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
-        Text("Find an account in your vault.", color = VeyloraMuted, fontSize = 13.sp)
+        Text("Find an account in your encrypted vault.", color = VeyloraMuted, fontSize = 13.sp)
         Spacer(Modifier.height(20.dp))
         OutlinedTextField(
             value = query,
@@ -659,15 +746,97 @@ private fun SearchScreen(query: String, onQueryChange: (String) -> Unit) {
             leadingIcon = { Text("⌕", color = VeyloraGold, fontSize = 22.sp) },
             shape = RoundedCornerShape(14.dp)
         )
-        Spacer(Modifier.height(26.dp))
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Text(
-                if (query.isBlank()) "No accounts to search yet." else "No matches — your vault is empty.",
-                color = VeyloraMuted,
-                fontSize = 13.sp
-            )
+        Spacer(Modifier.height(18.dp))
+        if (filtered.isEmpty()) {
+            Text(if (query.isBlank()) "No accounts saved yet." else "No matching accounts found.",
+                color = VeyloraMuted, fontSize = 13.sp)
+        } else {
+            filtered.forEach { account ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = VeyloraSurface),
+                    onClick = { onEdit(account) }
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(account.title, color = VeyloraText, fontWeight = FontWeight.Medium)
+                        Text(account.username.ifBlank { account.website },
+                            color = VeyloraMuted, fontSize = 12.sp)
+                    }
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun AccountEditorDialog(
+    account: VaultAccount?,
+    onDismiss: () -> Unit,
+    onSave: (VaultAccount) -> Unit
+) {
+    var title by remember(account?.id) { mutableStateOf(account?.title.orEmpty()) }
+    var username by remember(account?.id) { mutableStateOf(account?.username.orEmpty()) }
+    var password by remember(account?.id) { mutableStateOf(account?.password.orEmpty()) }
+    var website by remember(account?.id) { mutableStateOf(account?.website.orEmpty()) }
+    var notes by remember(account?.id) { mutableStateOf(account?.notes.orEmpty()) }
+    var category by remember(account?.id) { mutableStateOf(account?.category ?: "Other") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = VeyloraSurface,
+        title = { Text(if (account == null) "Add account" else "Edit account", color = VeyloraText) },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                OutlinedTextField(title, { title = it; error = null }, label = { Text("Account name *") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(username, { username = it }, label = { Text("Username / Email") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(password, { password = it }, label = { Text("Password") },
+                    singleLine = true, visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(website, { website = it }, label = { Text("Website") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(category, { category = it }, label = { Text("Category") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(notes, { notes = it }, label = { Text("Notes") },
+                    modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 4)
+                if (error != null) Text(error!!, color = Color(0xFFFF8A80), fontSize = 11.sp)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (title.isBlank()) {
+                    error = "Enter an account name."
+                } else if (title.length > 200 || website.length > 2048 ||
+                    username.length > 100000 || password.length > 100000 ||
+                    notes.length > 100000 || category.isBlank() || category.length > 100) {
+                    error = "One or more fields exceed the allowed length."
+                } else {
+                    onSave(
+                        VaultAccount(
+                            id = account?.id ?: java.util.UUID.randomUUID().toString(),
+                            title = title.trim(),
+                            username = username,
+                            password = password,
+                            website = website.trim(),
+                            notes = notes,
+                            category = category.trim(),
+                            createdAt = account?.createdAt ?: System.currentTimeMillis(),
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+            }) { Text("Save securely", color = VeyloraGold) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = VeyloraMuted) }
+        }
+    )
 }
 
 @Composable
