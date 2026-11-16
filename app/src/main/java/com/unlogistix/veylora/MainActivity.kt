@@ -779,11 +779,12 @@ private fun HomeScreen(
     onToggleFavorite: (VaultAccount) -> Unit,
     onDelete: (VaultAccount) -> Unit
 ) {
-    val folders = listOf(
-        "Facebook", "Instagram", "TikTok", "Telegram", "Email",
-        "Website", "Banking", "Shopping", "Gaming", "Work",
-        "Social", "Finance", "Entertainment", "Other"
-    )
+    val folders = (
+        listOf("Facebook", "Instagram", "TikTok", "Telegram", "Email",
+            "Website", "Banking", "Shopping", "Gaming", "Work",
+            "Social", "Finance", "Entertainment", "Other") +
+            accounts.map { it.category.trim() }.filter { it.isNotBlank() }
+        ).distinct()
     val symbols = mapOf(
         "Facebook" to "f", "Instagram" to "◎", "TikTok" to "♪", "Telegram" to "➤",
         "Email" to "✉", "Website" to "⌘", "Banking" to "▤", "Shopping" to "◇",
@@ -1136,7 +1137,7 @@ private fun AccountEditorDialog(
     var password by remember(account?.id) { mutableStateOf(account?.password.orEmpty()) }
     var website by remember(account?.id) { mutableStateOf(account?.website.orEmpty()) }
     var notes by remember(account?.id) { mutableStateOf(account?.notes.orEmpty()) }
-    var category by remember(account?.id) { mutableStateOf(account?.category ?: initialCategory ?: "Other") }
+    var category by remember(account?.id, initialCategory) { mutableStateOf(account?.category ?: initialCategory ?: "Other") }
     var categoryExpanded by remember { mutableStateOf(false) }
     val customFields = remember(account?.id, initialCategory) {
         mutableStateListOf<AccountCustomField>().apply {
@@ -1238,9 +1239,8 @@ private fun AccountEditorDialog(
                 Box(Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = category,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Category") },
+                        onValueChange = { category = it },
+                        label = { Text("Category / folder name") },
                         modifier = Modifier.fillMaxWidth(),
                         trailingIcon = { TextButton(onClick = { categoryExpanded = true }) { Text("Choose", color = VeyloraGold) } }
                     )
@@ -1325,7 +1325,8 @@ private fun AccountEditorDialog(
                 }
                 Text("SCREENSHOT ATTACHMENTS", color = VeyloraGold, fontSize = 10.sp,
                     letterSpacing = 1.5.sp, fontWeight = FontWeight.SemiBold)
-                attachments.forEach { attachment ->
+                if (account != null) {
+                    attachments.forEach { attachment ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -1389,6 +1390,7 @@ private fun AccountEditorDialog(
                             }
                         }
                     }
+                }
                 pendingScreenshotUris.forEachIndexed { index, uri ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
