@@ -41,86 +41,102 @@ object VaultCrypto {
     @Synchronized
     @Throws(GeneralSecurityException::class)
     fun create(context: Context, masterPassword: CharArray) {
-        val prefs = preferences(context)
-        check(!prefs.contains(KEY_WRAPPED)) { "Vault is already initialized." }
-
-        val salt = ByteArray(SALT_BYTES).also(random::nextBytes)
-        val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
-        val vaultKey = ByteArray(KEY_BITS / 8).also(random::nextBytes)
+        var salt: ByteArray? = null
+        var nonce: ByteArray? = null
+        var vaultKey: ByteArray? = null
         var wrappingKey: ByteArray? = null
-
         try {
-            wrappingKey = deriveKey(masterPassword, salt, KDF_ITERATIONS)
+            val prefs = preferences(context)
+            check(!prefs.contains(KEY_WRAPPED)) { "Vault is already initialized." }
+
+            val generatedSalt = ByteArray(SALT_BYTES).also(random::nextBytes)
+            val generatedNonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
+            val generatedVaultKey = ByteArray(KEY_BITS / 8).also(random::nextBytes)
+            salt = generatedSalt
+            nonce = generatedNonce
+            vaultKey = generatedVaultKey
+
+            wrappingKey = deriveKey(masterPassword, generatedSalt, KDF_ITERATIONS)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(
                 Cipher.ENCRYPT_MODE,
                 SecretKeySpec(wrappingKey, "AES"),
-                GCMParameterSpec(TAG_BITS, nonce)
+                GCMParameterSpec(TAG_BITS, generatedNonce)
             )
             cipher.updateAAD(associatedData(KDF_ITERATIONS))
-            val wrappedKey = cipher.doFinal(vaultKey)
+            val wrappedKey = cipher.doFinal(generatedVaultKey)
+            try {
+                val saved = prefs.edit()
+                    .putInt(KEY_VERSION, FORMAT_VERSION)
+                    .putInt(KEY_ITERATIONS, KDF_ITERATIONS)
+                    .putString(KEY_SALT, Base64.encodeToString(generatedSalt, Base64.NO_WRAP))
+                    .putString(KEY_NONCE, Base64.encodeToString(generatedNonce, Base64.NO_WRAP))
+                    .putString(KEY_WRAPPED, Base64.encodeToString(wrappedKey, Base64.NO_WRAP))
+                    .commit()
 
-            val saved = prefs.edit()
-                .putInt(KEY_VERSION, FORMAT_VERSION)
-                .putInt(KEY_ITERATIONS, KDF_ITERATIONS)
-                .putString(KEY_SALT, Base64.encodeToString(salt, Base64.NO_WRAP))
-                .putString(KEY_NONCE, Base64.encodeToString(nonce, Base64.NO_WRAP))
-                .putString(KEY_WRAPPED, Base64.encodeToString(wrappedKey, Base64.NO_WRAP))
-                .commit()
-
-            if (!saved) {
-                throw GeneralSecurityException("Could not save vault metadata.")
+                if (!saved) throw GeneralSecurityException("Could not save vault metadata.")
+                VaultSession.unlockWith(generatedVaultKey)
+            } finally {
+                wrappedKey.fill(0)
             }
-            VaultSession.unlockWith(vaultKey)
-            wrappedKey.fill(0)
         } finally {
+            masterPassword.fill('\u0000')
             wrappingKey?.fill(0)
-            salt.fill(0)
-            nonce.fill(0)
-            vaultKey.fill(0)
+            salt?.fill(0)
+            nonce?.fill(0)
+            vaultKey?.fill(0)
         }
     }
 
     @Synchronized
     @Throws(GeneralSecurityException::class)
     fun unlock(context: Context, masterPassword: CharArray) {
-        val prefs = preferences(context)
-        check(prefs.contains(KEY_WRAPPED)) { "Vault has not been initialized." }
-
-        val version = prefs.getInt(KEY_VERSION, -1)
-        val iterations = prefs.getInt(KEY_ITERATIONS, -1)
-        if (version != FORMAT_VERSION || iterations !in 100_000..2_000_000) {
-            throw GeneralSecurityException("Vault metadata is invalid or unsupported.")
-        }
-
-        val salt = decode(prefs.getString(KEY_SALT, null), SALT_BYTES)
-        val nonce = decode(prefs.getString(KEY_NONCE, null), NONCE_BYTES)
-        val wrappedKey = decode(prefs.getString(KEY_WRAPPED, null), 32 + TAG_BITS / 8)
+        var salt: ByteArray? = null
+        var nonce: ByteArray? = null
+        var wrappedKey: ByteArray? = null
         var wrappingKey: ByteArray? = null
         var vaultKey: ByteArray? = null
-
         try {
-            wrappingKey = deriveKey(masterPassword, salt, iterations)
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                SecretKeySpec(wrappingKey, "AES"),
-                GCMParameterSpec(TAG_BITS, nonce)
-            )
-            cipher.updateAAD(associatedData(iterations))
-            vaultKey = cipher.doFinal(wrappedKey)
-            if (vaultKey.size != KEY_BITS / 8) {
-                throw GeneralSecurityException("Vault key has an invalid length.")
+            val prefs = preferences(context)
+            check(prefs.contains(KEY_WRAPPED)) { "Vault has not been initialized." }
+
+            val version = prefs.getInt(KEY_VERSION, -1)
+            val iterations = prefs.getInt(KEY_ITERATIONS, -1)
+            if (version != FORMAT_VERSION || iterations !in 100_000..2_000_000) {
+                throw GeneralSecurityException("Vault metadata is invalid or unsupported.")
             }
-            VaultSession.unlockWith(vaultKey)
-        } catch (badTag: AEADBadTagException) {
-            throw InvalidMasterPasswordException()
+
+            val decodedSalt = decode(prefs.getString(KEY_SALT, null), SALT_BYTES)
+            salt = decodedSalt
+            val decodedNonce = decode(prefs.getString(KEY_NONCE, null), NONCE_BYTES)
+            nonce = decodedNonce
+            val decodedWrappedKey = decode(prefs.getString(KEY_WRAPPED, null), 32 + TAG_BITS / 8)
+            wrappedKey = decodedWrappedKey
+
+            try {
+                wrappingKey = deriveKey(masterPassword, decodedSalt, iterations)
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                cipher.init(
+                    Cipher.DECRYPT_MODE,
+                    SecretKeySpec(wrappingKey, "AES"),
+                    GCMParameterSpec(TAG_BITS, decodedNonce)
+                )
+                cipher.updateAAD(associatedData(iterations))
+                vaultKey = cipher.doFinal(decodedWrappedKey)
+                if (vaultKey.size != KEY_BITS / 8) {
+                    throw GeneralSecurityException("Vault key has an invalid length.")
+                }
+                VaultSession.unlockWith(vaultKey)
+            } catch (badTag: AEADBadTagException) {
+                throw InvalidMasterPasswordException()
+            }
         } finally {
+            masterPassword.fill('\u0000')
             wrappingKey?.fill(0)
             vaultKey?.fill(0)
-            salt.fill(0)
-            nonce.fill(0)
-            wrappedKey.fill(0)
+            salt?.fill(0)
+            nonce?.fill(0)
+            wrappedKey?.fill(0)
         }
     }
 
