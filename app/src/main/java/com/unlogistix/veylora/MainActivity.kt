@@ -21,6 +21,7 @@ import kotlinx.coroutines.withContext
 import com.unlogistix.veylora.security.InvalidMasterPasswordException
 import com.unlogistix.veylora.security.AccountVaultStore
 import com.unlogistix.veylora.security.VaultAccount
+import com.unlogistix.veylora.security.AccountCustomField
 import com.unlogistix.veylora.security.BiometricVaultUnlock
 import com.unlogistix.veylora.security.PinVaultUnlock
 import com.unlogistix.veylora.security.PinUnlockResult
@@ -48,6 +49,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -807,7 +810,12 @@ private fun AccountEditorDialog(
     var website by remember(account?.id) { mutableStateOf(account?.website.orEmpty()) }
     var notes by remember(account?.id) { mutableStateOf(account?.notes.orEmpty()) }
     var category by remember(account?.id) { mutableStateOf(account?.category ?: "Other") }
+    var categoryExpanded by remember { mutableStateOf(false) }
+    val customFields = remember(account?.id) {
+        mutableStateListOf<AccountCustomField>().apply { addAll(account?.customFields.orEmpty()) }
+    }
     var error by remember { mutableStateOf<String?>(null) }
+    val categories = listOf("Social", "Email", "Finance", "Gaming", "Work", "Shopping", "Entertainment", "Other")
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -815,7 +823,7 @@ private fun AccountEditorDialog(
         title = { Text(if (account == null) "Add account" else "Edit account", color = VeyloraText) },
         text = {
             Column(
-                Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(9.dp)
             ) {
                 OutlinedTextField(title, { title = it; error = null }, label = { Text("Account name *") },
@@ -827,23 +835,91 @@ private fun AccountEditorDialog(
                     modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(website, { website = it }, label = { Text("Website") },
                     singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(category, { category = it }, label = { Text("Category") },
-                    singleLine = true, modifier = Modifier.fillMaxWidth())
+
+                Box(Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Category") },
+                        modifier = Modifier.fillMaxWidth(),
+                        trailingIcon = { TextButton(onClick = { categoryExpanded = true }) { Text("Choose", color = VeyloraGold) } }
+                    )
+                    DropdownMenu(
+                        expanded = categoryExpanded,
+                        onDismissRequest = { categoryExpanded = false }
+                    ) {
+                        categories.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option) },
+                                onClick = { category = option; categoryExpanded = false }
+                            )
+                        }
+                    }
+                }
+
                 OutlinedTextField(notes, { notes = it }, label = { Text("Notes") },
                     modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 4)
+
+                Text("CUSTOM FIELDS", color = VeyloraGold, fontSize = 10.sp,
+                    letterSpacing = 1.5.sp, fontWeight = FontWeight.SemiBold)
+                customFields.forEachIndexed { index, field ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = VeyloraBlack),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(Modifier.padding(10.dp)) {
+                            OutlinedTextField(
+                                value = field.label,
+                                onValueChange = { value ->
+                                    customFields[index] = field.copy(label = value)
+                                },
+                                label = { Text("Field name") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = field.value,
+                                onValueChange = { value ->
+                                    customFields[index] = field.copy(value = value)
+                                },
+                                label = { Text("Field value") },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            TextButton(onClick = { customFields.removeAt(index) }) {
+                                Text("Remove field", color = Color(0xFFFF8A80))
+                            }
+                        }
+                    }
+                }
+                TextButton(
+                    onClick = {
+                        if (customFields.size < 30) {
+                            customFields.add(AccountCustomField(label = "", value = ""))
+                        }
+                    },
+                    enabled = customFields.size < 30
+                ) {
+                    Text("＋ Add custom field", color = VeyloraGold)
+                }
                 if (error != null) Text(error!!, color = Color(0xFFFF8A80), fontSize = 11.sp)
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                if (title.isBlank()) {
-                    error = "Enter an account name."
-                } else if (title.length > 200 || website.length > 2048 ||
-                    username.length > 100000 || password.length > 100000 ||
-                    notes.length > 100000 || category.isBlank() || category.length > 100) {
-                    error = "One or more fields exceed the allowed length."
-                } else {
-                    onSave(
+                val nonEmptyFields = customFields.filter { it.label.isNotBlank() || it.value.isNotBlank() }
+                when {
+                    title.isBlank() -> error = "Enter an account name."
+                    title.length > 200 || website.length > 2048 ||
+                        username.length > 100000 || password.length > 100000 ||
+                        notes.length > 100000 || category.isBlank() || category.length > 100 ->
+                        error = "One or more fields exceed the allowed length."
+                    nonEmptyFields.any { it.label.isBlank() } ->
+                        error = "Give every custom field a name."
+                    nonEmptyFields.any { it.label.length > 100 || it.value.length > 100000 } ->
+                        error = "A custom field exceeds the allowed length."
+                    else -> onSave(
                         VaultAccount(
                             id = account?.id ?: java.util.UUID.randomUUID().toString(),
                             title = title.trim(),
@@ -851,7 +927,8 @@ private fun AccountEditorDialog(
                             password = password,
                             website = website.trim(),
                             notes = notes,
-                            category = category.trim(),
+                            category = category,
+                            customFields = nonEmptyFields,
                             createdAt = account?.createdAt ?: System.currentTimeMillis(),
                             updatedAt = System.currentTimeMillis()
                         )
