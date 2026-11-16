@@ -87,4 +87,48 @@ class VaultBackupCryptoTest {
         assertTrue(shortPasswordRejected)
         assertTrue(shortPassword.all { it == '\u0000' })
     }
+
+    @Test
+    fun encryptionUsesFreshSaltAndNonceForEachBackup() {
+        val payload = "same backup bytes".toByteArray(Charsets.UTF_8)
+        val first = VaultBackupCrypto.encrypt(payload, "Correct-Horse-Backup-2026".toCharArray())
+        val second = VaultBackupCrypto.encrypt(payload, "Correct-Horse-Backup-2026".toCharArray())
+        try {
+            // The fixed header is 9 bytes; salt and nonce occupy the next 28 bytes.
+            assertTrue(!first.copyOfRange(9, 37).contentEquals(second.copyOfRange(9, 37)))
+        } finally {
+            payload.fill(0)
+            first.fill(0)
+            second.fill(0)
+        }
+    }
+
+    @Test
+    fun malformedEnvelopeIsRejectedAndPasswordIsCleared() {
+        val password = "Correct-Horse-Backup-2026".toCharArray()
+        var rejected = false
+        try {
+            VaultBackupCrypto.decrypt(ByteArray(40), password)
+        } catch (_: GeneralSecurityException) {
+            rejected = true
+        }
+        assertTrue(rejected)
+        assertTrue(password.all { it == '\u0000' })
+    }
+
+    @Test
+    fun unsupportedBackupHeaderIsRejectedAndPasswordIsCleared() {
+        val envelope = ByteArray(8 + 1 + 16 + 12 + 16)
+        val password = "Correct-Horse-Backup-2026".toCharArray()
+        var rejected = false
+        try {
+            VaultBackupCrypto.decrypt(envelope, password)
+        } catch (_: GeneralSecurityException) {
+            rejected = true
+        } finally {
+            envelope.fill(0)
+        }
+        assertTrue(rejected)
+        assertTrue(password.all { it == '\u0000' })
+    }
 }
