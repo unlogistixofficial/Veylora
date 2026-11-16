@@ -244,6 +244,23 @@ private fun VeyloraDashboard(activity: MainActivity?) {
         }
     }
 
+    fun toggleFavorite(account: VaultAccount) {
+        scope.launch {
+            try {
+                val updated = account.copy(isFavorite = !account.isFavorite)
+                val stored = withContext(Dispatchers.IO) {
+                    AccountVaultStore.upsert(context, updated)
+                    AccountVaultStore.load(context)
+                }
+                accounts.clear()
+                accounts.addAll(stored)
+                storageError = null
+            } catch (_: Exception) {
+                storageError = "Could not update favorite status."
+            }
+        }
+    }
+
     fun refreshAccounts() {
         scope.launch {
             try {
@@ -283,11 +300,13 @@ private fun VeyloraDashboard(activity: MainActivity?) {
                         accountsLoaded = accountsLoaded,
                         onAddClick = { editingAccount = null; showEditor = true },
                         onEdit = { editingAccount = it; showEditor = true },
+                        onToggleFavorite = { account -> toggleFavorite(account) },
                         onDelete = { account -> pendingDelete = account }
                     )
-                    VeyloraTab.FAVORITES -> EmptyCollectionScreen(
-                        title = "Your favorites",
-                        message = "Favorite organization will be available in a later step."
+                    VeyloraTab.FAVORITES -> FavoritesScreen(
+                        accounts = accounts.filter { it.isFavorite },
+                        onEdit = { editingAccount = it; showEditor = true },
+                        onToggleFavorite = { account -> toggleFavorite(account) }
                     )
                     VeyloraTab.SEARCH -> SearchScreen(
                         query = searchQuery,
@@ -591,6 +610,7 @@ private fun HomeScreen(
     accountsLoaded: Boolean,
     onAddClick: () -> Unit,
     onEdit: (VaultAccount) -> Unit,
+    onToggleFavorite: (VaultAccount) -> Unit,
     onDelete: (VaultAccount) -> Unit
 ) {
     Column(
@@ -673,8 +693,18 @@ private fun HomeScreen(
                     colors = CardDefaults.cardColors(containerColor = VeyloraSurface)
                 ) {
                     Column(Modifier.padding(14.dp)) {
-                        Text(account.title, color = VeyloraText, fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(account.title, color = VeyloraText, fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { onToggleFavorite(account) }) {
+                                Text(if (account.isFavorite) "★" else "☆",
+                                    color = VeyloraGold, fontSize = 20.sp)
+                            }
+                        }
                         Spacer(Modifier.height(3.dp))
                         Text(
                             account.username.ifBlank { account.website.ifBlank { account.category } },
@@ -696,6 +726,48 @@ private fun HomeScreen(
         Spacer(Modifier.height(20.dp))
         Text("Account records are encrypted before they are written to app-private storage.",
             color = VeyloraMuted, fontSize = 11.sp, lineHeight = 16.sp)
+    }
+}
+
+@Composable
+private fun FavoritesScreen(
+    accounts: List<VaultAccount>,
+    onEdit: (VaultAccount) -> Unit,
+    onToggleFavorite: (VaultAccount) -> Unit
+) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(22.dp)) {
+        Text("Favorites", color = VeyloraText, fontSize = 27.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text("Your starred accounts, kept inside your encrypted vault.", color = VeyloraMuted, fontSize = 13.sp)
+        Spacer(Modifier.height(18.dp))
+        if (accounts.isEmpty()) {
+            Text("No favorites yet. Star an account on the Home screen to add it here.",
+                color = VeyloraMuted, fontSize = 13.sp, lineHeight = 19.sp)
+        } else {
+            accounts.forEach { account ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = VeyloraSurface),
+                    onClick = { onEdit(account) }
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(account.title, color = VeyloraText, fontWeight = FontWeight.SemiBold)
+                            Text(account.username.ifBlank { account.website.ifBlank { account.category } },
+                                color = VeyloraMuted, fontSize = 12.sp)
+                        }
+                        TextButton(onClick = { onToggleFavorite(account) }) {
+                            Text("★", color = VeyloraGold, fontSize = 20.sp)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -807,6 +879,29 @@ private fun SearchScreen(
     }
 }
 
+private fun generateSecurePassword(length: Int): String {
+    require(length in 12..64)
+    val random = java.security.SecureRandom()
+    val upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+    val lower = "abcdefghijkmnopqrstuvwxyz"
+    val digits = "23456789"
+    val symbols = "!@#$%&*()-_=+[]{}?"
+    val all = upper + lower + digits + symbols
+    val result = ArrayList<Char>(length)
+    result.add(upper[random.nextInt(upper.length)])
+    result.add(lower[random.nextInt(lower.length)])
+    result.add(digits[random.nextInt(digits.length)])
+    result.add(symbols[random.nextInt(symbols.length)])
+    repeat(length - result.size) { result.add(all[random.nextInt(all.length)]) }
+    for (index in result.lastIndex downTo 1) {
+        val swapIndex = random.nextInt(index + 1)
+        val value = result[index]
+        result[index] = result[swapIndex]
+        result[swapIndex] = value
+    }
+    return result.joinToString("")
+}
+
 @Composable
 private fun AccountEditorDialog(
     account: VaultAccount?,
@@ -897,6 +992,9 @@ private fun AccountEditorDialog(
                 OutlinedTextField(password, { password = it }, label = { Text("Password") },
                     singleLine = true, visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth())
+                TextButton(onClick = {
+                    password = generateSecurePassword(20)
+                }) { Text("Generate secure password", color = VeyloraGold) }
                 OutlinedTextField(website, { website = it }, label = { Text("Website") },
                     singleLine = true, modifier = Modifier.fillMaxWidth())
 
@@ -1069,6 +1167,8 @@ private fun AccountEditorDialog(
                             notes = notes,
                             category = category,
                             customFields = nonEmptyFields,
+                            attachments = account?.attachments.orEmpty(),
+                            isFavorite = account?.isFavorite ?: false,
                             createdAt = account?.createdAt ?: System.currentTimeMillis(),
                             updatedAt = System.currentTimeMillis()
                         )
