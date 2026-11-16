@@ -1164,7 +1164,6 @@ private fun AccountEditorDialog(
     val pendingScreenshotUris = remember(account?.id) { mutableStateListOf<Uri>() }
     val context = LocalContext.current
     val activity = context as? MainActivity
-    val existingAccountId = account?.id
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
