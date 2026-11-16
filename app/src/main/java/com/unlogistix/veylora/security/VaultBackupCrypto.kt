@@ -107,12 +107,16 @@ object VaultBackupCrypto {
     }
 
     private fun validateInputs(payload: ByteArray, password: CharArray) {
-        require(payload.isNotEmpty() && payload.size <= MAX_PAYLOAD_BYTES) {
-            "Backup payload must be between 1 byte and 100 MB."
-        }
-        require(password.size >= MIN_PASSWORD_LENGTH) {
+        try {
+            require(payload.isNotEmpty() && payload.size <= MAX_PAYLOAD_BYTES) {
+                "Backup payload must be between 1 byte and 100 MB."
+            }
+            require(password.size >= MIN_PASSWORD_LENGTH) {
+                "Backup password must contain at least $MIN_PASSWORD_LENGTH characters."
+            }
+        } catch (error: IllegalArgumentException) {
             password.fill(0.toChar())
-            "Backup password must contain at least $MIN_PASSWORD_LENGTH characters."
+            throw error
         }
     }
 
